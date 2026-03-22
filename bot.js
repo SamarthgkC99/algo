@@ -12,11 +12,9 @@ const port = process.env.PORT || 5000;
 // ------------------------------
 // Upstash Redis REST Configuration
 // ------------------------------
-// 🔹 PASTE YOUR UPSTASH REST URL AND TOKEN HERE (if environment variables fail)
 const HARDCODED_URL = 'https://robust-kitten-78595.upstash.io';
 const HARDCODED_TOKEN = 'gQAAAAAAATMDAAIncDEyZjJkNzQyMDQyN2Q0ODEwOTI1ZGY4MTczMWM4MGQzYnAxNzg1OTU';
 
-// Use environment variables if set, otherwise fallback to hardcoded
 const redisUrl = process.env.UPSTASH_REDIS_REST_URL || HARDCODED_URL;
 const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN || HARDCODED_TOKEN;
 
@@ -37,16 +35,15 @@ redis.ping().then(() => console.log('✅ Connected to Upstash Redis')).catch(err
 // ------------------------------
 const START_BALANCE = 10000;
 const BTC_USDT_RATE = 85;
-const COINS_PER_TRADE = 0.001; // not used – risk manager decides size
+const COINS_PER_TRADE = 0.001;
 
-// Keys in Redis
 const TRADES_KEY = 'demo_trades';
 const RISK_STATE_KEY = 'risk_state';
 const RISK_CONFIG_KEY = 'risk_config';
 const TRADING_STATE_KEY = 'trading_state';
 
 // ------------------------------
-// Helper: Load / Save Data from Redis
+// Redis Load/Save Helpers
 // ------------------------------
 async function loadTrades() {
   const data = await redis.get(TRADES_KEY);
@@ -167,7 +164,7 @@ async function saveTradingState(state) {
 }
 
 // ------------------------------
-// Binance API (with fallback)
+// Data Sources
 // ------------------------------
 const BINANCE_ENDPOINTS = [
   'https://api1.binance.com',
@@ -176,11 +173,11 @@ const BINANCE_ENDPOINTS = [
   'https://api4.binance.com',
   'https://api.binance.com',
   'https://api-gcp.binance.com'
-]; // <-- FIXED: added closing bracket and semicolon
+];
 
 async function binanceRequest(path, params = {}) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 5000); // 5s timeout
+  const timeout = setTimeout(() => controller.abort(), 5000);
 
   for (const endpoint of BINANCE_ENDPOINTS) {
     try {
@@ -220,31 +217,54 @@ async function fetchPriceFromCoinGecko() {
 }
 
 async function getCurrentPrice() {
-  // Try Binance first
   const binancePrice = await binanceRequest('/api/v3/ticker/price', { symbol: 'BTCUSDT' });
   if (binancePrice) return parseFloat(binancePrice.price);
-
-  // Fallback to CoinGecko
   const geckoPrice = await fetchPriceFromCoinGecko();
   if (geckoPrice) return geckoPrice;
-
   return null;
 }
 
+async function fetchKlinesFromCoinPaprika(limit = 350, interval = '5m') {
+  const end = new Date();
+  const start = new Date(end.getTime() - (limit * 5 * 60 * 1000));
+  const startISO = start.toISOString().split('.')[0] + 'Z';
+  const endISO = end.toISOString().split('.')[0] + 'Z';
+  const url = `https://api.coinpaprika.com/v1/coins/btc-bitcoin/ohlcv/historical?start=${startISO}&end=${endISO}&limit=${limit}&interval=${interval}`;
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    // Convert to Binance-like array
+    return data.map(candle => [
+      new Date(candle.time_open).getTime(),
+      candle.open,
+      candle.high,
+      candle.low,
+      candle.close,
+      candle.volume,
+      0, 0, 0, 0, 0, 0
+    ]);
+  } catch (err) {
+    console.warn('CoinPaprika error:', err.message);
+    return null;
+  }
+}
+
 async function getKlines(symbol = 'BTCUSDT', interval = '5m', limit = 350) {
-  // Only Binance provides klines; if it fails, return null
-  return await binanceRequest('/api/v3/klines', { symbol, interval, limit });
+  const binanceKlines = await binanceRequest('/api/v3/klines', { symbol, interval, limit });
+  if (binanceKlines) return binanceKlines;
+  console.log('Binance failed, trying CoinPaprika...');
+  return await fetchKlinesFromCoinPaprika(limit, interval);
 }
 
 // ------------------------------
-// UT Bot Logic (pure JS)
+// UT Bot Logic
 // ------------------------------
 function calcUtbot(klines, keyvalue, atrPeriod) {
   const close = klines.map(k => parseFloat(k[4]));
   const high = klines.map(k => parseFloat(k[2]));
   const low = klines.map(k => parseFloat(k[3]));
 
-  // Calculate TR
   const tr = [];
   for (let i = 0; i < high.length; i++) {
     if (i === 0) tr.push(high[i] - low[i]);
@@ -256,7 +276,6 @@ function calcUtbot(klines, keyvalue, atrPeriod) {
     }
   }
 
-  // ATR (simple moving average)
   const atr = [];
   for (let i = 0; i < tr.length; i++) {
     if (i < atrPeriod - 1) atr.push(null);
@@ -374,7 +393,7 @@ function calculateStopLoss(entry, type, atr, utbotStop, config) {
     case 'utbot':
       stop = utbotStop || fixedStop;
       break;
-    default: // hybrid
+    default:
       stop = type === 'LONG'
         ? Math.max(atrStop, fixedStop)
         : Math.min(atrStop, fixedStop);
@@ -478,10 +497,8 @@ async function checkAccountProtection(balance) {
 async function canOpenTrade(balance) {
   const daily = await checkDailyLimits();
   if (!daily.allowed) return daily;
-
   const account = await checkAccountProtection(balance);
   if (!account.allowed) return account;
-
   return { allowed: true, reason: null };
 }
 
@@ -625,7 +642,7 @@ async function updateDemoTrade(signal, price, atrValue, utbotStop) {
         original_amount: positionSize,
         stop_loss: stopLoss,
         tp1_price: tp1Price,
-        tp_levels: tpLevels.slice(0,1), // only TP1 for display
+        tp_levels: tpLevels.slice(0,1),
         opened_at: new Date().toISOString(),
         strategy: 'UT Bot #2 (KV=2, ATR=300)',
         atr_at_entry: atrValue,
@@ -681,7 +698,7 @@ async function updateDemoTrade(signal, price, atrValue, utbotStop) {
 
   if (!data.order_log) data.order_log = [];
   data.order_log.push(logEntry);
-  if (data.order_log.length > 100) data.order_log.shift(); // keep last 100
+  if (data.order_log.length > 100) data.order_log.shift();
 
   data.open_trade = openTrade;
   await saveTrades(data);
@@ -742,7 +759,7 @@ async function isTradingAllowed() {
 // Express Routes
 // ------------------------------
 app.use(express.json());
-app.use(express.static(__dirname)); // serve index.html
+app.use(express.static(__dirname));
 
 app.get('/', (req, res) => {
   res.sendFile(__dirname + '/index.html');
@@ -760,7 +777,6 @@ app.get('/signal', async (req, res) => {
     const data = await loadTrades();
     const openTrade = data.open_trade;
 
-    // If trading not allowed, just return current state (no new trades)
     let response;
     if (!tradingAllowed.allowed) {
       const livePl = calculateLivePL(openTrade, price);
@@ -969,7 +985,7 @@ app.post('/trading-control', async (req, res) => {
 });
 
 // ------------------------------
-// Helper for getRiskStatus (used in routes)
+// Helper for getRiskStatus
 // ------------------------------
 async function getRiskStatus() {
   const config = await loadRiskConfig();
@@ -1008,7 +1024,6 @@ async function resetDailyIfNeeded() {
   }
 }
 
-// Run every hour
 cron.schedule('0 * * * *', resetDailyIfNeeded);
 
 // ------------------------------
