@@ -557,11 +557,14 @@ function renderBanner(d) {
   }
 
   if (s.force_start) {
-    hours.textContent = `Force Mode: 24/7 | Current: ${d.current_time}`;
+    const istTime = new Date().toLocaleTimeString('en-IN', {timeZone:'Asia/Kolkata', hour:'2-digit', minute:'2-digit', hour12:false});
+hours.textContent = `Force Mode: 24/7 | Current: ${istTime} IST`;
   } else if (s.enabled) {
-    hours.textContent = `Trading Hours: ${String(s.start_hour).padStart(2,'0')}:00 – ${String(s.end_hour).padStart(2,'0')}:00 | Current: ${d.current_time}`;
+   const istTime = new Date().toLocaleTimeString('en-IN', {timeZone:'Asia/Kolkata', hour:'2-digit', minute:'2-digit', hour12:false});
+hours.textContent = `Trading Hours: ${String(s.start_hour).padStart(2,'0')}:00 – ${String(s.end_hour).padStart(2,'0')}:00 | Current: ${istTime} IST`;
   } else {
-    hours.textContent = `Always Active (no hour restriction) | Current: ${d.current_time}`;
+    const istTime = new Date().toLocaleTimeString('en-IN', {timeZone:'Asia/Kolkata', hour:'2-digit', minute:'2-digit', hour12:false});
+hours.textContent = `Always Active (no hour restriction) | Current: ${istTime} IST`;
   }
 }
 
