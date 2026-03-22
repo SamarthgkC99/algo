@@ -170,20 +170,29 @@ async function saveTradingState(state) {
 // Binance API (with fallback)
 // ------------------------------
 const BINANCE_ENDPOINTS = [
-  'https://api.binance.com',
   'https://api1.binance.com',
   'https://api2.binance.com',
   'https://api3.binance.com',
-  'https://data.binance.com'
-];
+  'https://api4.binance.com',
+  'https://api.binance.com',
+  'https://api-gcp.binance.com',
 
 async function binanceRequest(path, params = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000); // 5s timeout
+
   for (const endpoint of BINANCE_ENDPOINTS) {
     try {
       const url = new URL(path, endpoint);
       Object.entries(params).forEach(([k, v]) => url.searchParams.append(k, v));
-      const response = await fetch(url.toString());
+      const response = await fetch(url.toString(), {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        },
+        signal: controller.signal
+      });
       if (response.status === 200) {
+        clearTimeout(timeout);
         return await response.json();
       }
       console.warn(`⚠️ ${endpoint} returned ${response.status}`);
@@ -191,18 +200,40 @@ async function binanceRequest(path, params = {}) {
       console.warn(`⚠️ ${endpoint} error:`, err.message);
     }
   }
+  clearTimeout(timeout);
+  return null;
+}
+
+async function fetchPriceFromCoinGecko() {
+  try {
+    const url = 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd';
+    const response = await fetch(url);
+    const data = await response.json();
+    if (data && data.bitcoin && data.bitcoin.usd) {
+      return data.bitcoin.usd;
+    }
+  } catch (err) {
+    console.warn('CoinGecko error:', err.message);
+  }
   return null;
 }
 
 async function getCurrentPrice() {
-  const data = await binanceRequest('/api/v3/ticker/price', { symbol: 'BTCUSDT' });
-  return data ? parseFloat(data.price) : null;
+  // Try Binance first
+  const binancePrice = await binanceRequest('/api/v3/ticker/price', { symbol: 'BTCUSDT' });
+  if (binancePrice) return parseFloat(binancePrice.price);
+
+  // Fallback to CoinGecko
+  const geckoPrice = await fetchPriceFromCoinGecko();
+  if (geckoPrice) return geckoPrice;
+
+  return null;
 }
 
 async function getKlines(symbol = 'BTCUSDT', interval = '5m', limit = 350) {
+  // Only Binance provides klines; if it fails, return null
   return await binanceRequest('/api/v3/klines', { symbol, interval, limit });
 }
-
 // ------------------------------
 // UT Bot Logic (pure JS)
 // ------------------------------
