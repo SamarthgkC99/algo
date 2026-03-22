@@ -1,8 +1,8 @@
-// bot.js – UT Bot Trading System with Risk Management (Node.js + Redis)
+// bot.js – UT Bot Trading System with Risk Management (Node.js + Upstash Redis REST)
 
 require('dotenv').config();
 const express = require('express');
-const Redis = require('ioredis');
+const { Redis } = require('@upstash/redis');
 const fetch = require('node-fetch');
 const cron = require('node-cron');
 
@@ -10,14 +10,27 @@ const app = express();
 const port = process.env.PORT || 5000;
 
 // ------------------------------
-// Redis Client Setup
+// Upstash Redis REST Configuration
 // ------------------------------
-const redis = new Redis(process.env.REDIS_URL, {
-  retryStrategy: times => Math.min(times * 50, 2000)
+// 🔹 PASTE YOUR UPSTASH REST URL AND TOKEN HERE (if environment variables fail)
+const HARDCODED_URL = 'https://robust-kitten-78595.upstash.io';
+const HARDCODED_TOKEN = 'gQAAAAAAATMDAAIncDEyZjJkNzQyMDQyN2Q0ODEwOTI1ZGY4MTczMWM4MGQzYnAxNzg1OTU';
+
+// Use environment variables if set, otherwise fallback to hardcoded
+const redisUrl = process.env.UPSTASH_REDIS_REST_URL || HARDCODED_URL;
+const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN || HARDCODED_TOKEN;
+
+if (!redisUrl || !redisToken) {
+  console.error('❌ Missing Upstash Redis REST URL or token.');
+  process.exit(1);
+}
+
+const redis = new Redis({
+  url: redisUrl,
+  token: redisToken,
 });
 
-redis.on('connect', () => console.log('✅ Connected to Redis'));
-redis.on('error', (err) => console.error('Redis error:', err));
+redis.ping().then(() => console.log('✅ Connected to Upstash Redis')).catch(err => console.error('Redis error:', err));
 
 // ------------------------------
 // Constants
@@ -48,7 +61,7 @@ async function loadTrades() {
     await redis.set(TRADES_KEY, JSON.stringify(defaultData));
     return defaultData;
   }
-  return JSON.parse(data);
+  return typeof data === 'string' ? JSON.parse(data) : data;
 }
 
 async function saveTrades(data) {
@@ -58,7 +71,7 @@ async function saveTrades(data) {
 async function loadRiskState() {
   const data = await redis.get(RISK_STATE_KEY);
   if (!data) return resetRiskState();
-  return JSON.parse(data);
+  return typeof data === 'string' ? JSON.parse(data) : data;
 }
 
 async function saveRiskState(state) {
@@ -126,7 +139,7 @@ async function loadRiskConfig() {
     await saveRiskConfig(defaultConfig);
     return defaultConfig;
   }
-  return JSON.parse(data);
+  return typeof data === 'string' ? JSON.parse(data) : data;
 }
 
 async function saveRiskConfig(config) {
@@ -146,7 +159,7 @@ async function loadTradingState() {
     await redis.set(TRADING_STATE_KEY, JSON.stringify(defaultState));
     return defaultState;
   }
-  return JSON.parse(data);
+  return typeof data === 'string' ? JSON.parse(data) : data;
 }
 
 async function saveTradingState(state) {
@@ -921,6 +934,29 @@ app.post('/trading-control', async (req, res) => {
     res.status(400).json({ success: false, error: err.message });
   }
 });
+
+// ------------------------------
+// Helper for getRiskStatus (used in routes)
+// ------------------------------
+async function getRiskStatus() {
+  const config = await loadRiskConfig();
+  const state = await loadRiskState();
+  const limits = config.daily_limits;
+
+  return {
+    daily_stats: {
+      trades: `${state.daily_trades}/${limits.max_daily_trades}`,
+      loss: `₹${state.daily_loss.toFixed(2)}/₹${limits.max_daily_loss.toFixed(2)}`,
+      profit: `₹${state.daily_profit.toFixed(2)}`,
+      consecutive_losses: `${state.consecutive_losses}/${limits.max_consecutive_losses}`
+    },
+    limits_usage: {
+      trades_pct: (state.daily_trades / limits.max_daily_trades) * 100,
+      loss_pct: (state.daily_loss / limits.max_daily_loss) * 100
+    },
+    config
+  };
+}
 
 // ------------------------------
 // Cron Job: Reset Daily Risk State
