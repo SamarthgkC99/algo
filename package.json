@@ -1,0 +1,16 @@
+{
+  "name": "utbot-trading",
+  "version": "1.0.0",
+  "description": "UT Bot Trading System with Risk Management",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "ioredis": "^5.3.2",
+    "node-fetch": "^2.6.7",
+    "node-cron": "^3.0.2",
+    "dotenv": "^16.0.3"
+  }
+}
