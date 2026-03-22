@@ -175,7 +175,8 @@ const BINANCE_ENDPOINTS = [
   'https://api3.binance.com',
   'https://api4.binance.com',
   'https://api.binance.com',
-  'https://api-gcp.binance.com',
+  'https://api-gcp.binance.com'
+]; // <-- FIXED: added closing bracket and semicolon
 
 async function binanceRequest(path, params = {}) {
   const controller = new AbortController();
@@ -234,6 +235,7 @@ async function getKlines(symbol = 'BTCUSDT', interval = '5m', limit = 350) {
   // Only Binance provides klines; if it fails, return null
   return await binanceRequest('/api/v3/klines', { symbol, interval, limit });
 }
+
 // ------------------------------
 // UT Bot Logic (pure JS)
 // ------------------------------
