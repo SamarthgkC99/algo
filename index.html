@@ -4,7 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>UT Bot Trading Dashboard - Risk Management</title>
-<!-- Updated to Chart.js v4 -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-financial@0.2.0/dist/chartjs-chart-financial.min.js"></script>
@@ -24,6 +23,7 @@
     --accent-blue: #58a6ff;
     --accent-yellow: #f0c442;
     --accent-orange: #fd7e14;
+    --accent-purple: #bc8cff;
   }
 
   * { box-sizing: border-box; }
@@ -143,6 +143,138 @@
     margin-top: 6px;
   }
 
+  /* ─── Manual Controls Card ─── */
+  .manual-controls-card {
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--accent-purple);
+    border-radius: 12px;
+    padding: 20px;
+    grid-column: 1 / -1;
+    box-shadow: 0 0 20px rgba(188, 140, 255, 0.08);
+  }
+
+  .manual-controls-card h2 {
+    border-color: var(--accent-purple);
+    color: var(--accent-purple);
+  }
+
+  .manual-controls-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+
+  .manual-control-block {
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    padding: 16px;
+  }
+
+  .manual-control-block h3 {
+    margin: 0 0 12px 0;
+    font-size: 0.95rem;
+    color: var(--text-secondary);
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .manual-input-row {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+  }
+
+  .manual-input {
+    flex: 1;
+    background-color: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 1rem;
+    font-family: 'Inter', sans-serif;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+
+  .manual-input:focus {
+    border-color: var(--accent-purple);
+    box-shadow: 0 0 0 3px rgba(188,140,255,0.15);
+  }
+
+  .manual-input::placeholder {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+  }
+
+  .manual-btn {
+    padding: 10px 18px;
+    border-radius: 8px;
+    border: none;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+  }
+
+  .manual-btn-set {
+    background-color: var(--accent-purple);
+    color: white;
+  }
+
+  .manual-btn-set:hover {
+    background-color: #a87bf0;
+  }
+
+  .manual-btn-clear {
+    background-color: var(--bg-secondary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+  }
+
+  .manual-btn-clear:hover {
+    background-color: var(--border-color);
+    color: var(--text-primary);
+  }
+
+  .manual-status {
+    margin-top: 10px;
+    font-size: 0.8rem;
+    min-height: 20px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .manual-status.active {
+    color: var(--accent-purple);
+  }
+
+  .manual-status.success {
+    color: var(--accent-green);
+  }
+
+  .manual-status.error {
+    color: var(--accent-red);
+  }
+
+  .override-badge {
+    display: inline-block;
+    background: var(--accent-purple);
+    color: white;
+    font-size: 0.6rem;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 4px;
+    vertical-align: middle;
+    margin-left: 8px;
+    letter-spacing: 0.5px;
+  }
+
   /* Risk Management Styles */
   .risk-panel {
     background-color: var(--bg-tertiary);
@@ -160,23 +292,12 @@
     border-bottom: 1px solid var(--border-color);
   }
 
-  .risk-item:last-child {
-    border-bottom: none;
-  }
+  .risk-item:last-child { border-bottom: none; }
 
-  .risk-label {
-    color: var(--text-secondary);
-  }
+  .risk-label { color: var(--text-secondary); }
+  .risk-value { font-weight: 600; }
 
-  .risk-value {
-    font-weight: 600;
-  }
-
-  .tp-levels {
-    display: grid;
-    gap: 8px;
-    margin-top: 10px;
-  }
+  .tp-levels { display: grid; gap: 8px; margin-top: 10px; }
 
   .tp-level {
     background-color: var(--bg-tertiary);
@@ -193,15 +314,9 @@
     background-color: rgba(63, 185, 80, 0.1);
   }
 
-  .tp-level.pending {
-    border-left: 3px solid var(--accent-yellow);
-  }
+  .tp-level.pending { border-left: 3px solid var(--accent-yellow); }
 
-  .daily-limits {
-    display: grid;
-    gap: 10px;
-    margin-top: 10px;
-  }
+  .daily-limits { display: grid; gap: 10px; margin-top: 10px; }
 
   .limit-bar {
     background-color: var(--bg-secondary);
@@ -229,19 +344,10 @@
     transition: width 0.3s ease;
   }
 
-  .progress-fill.warning {
-    background-color: var(--accent-yellow);
-  }
+  .progress-fill.warning { background-color: var(--accent-yellow); }
+  .progress-fill.danger { background-color: var(--accent-red); }
 
-  .progress-fill.danger {
-    background-color: var(--accent-red);
-  }
-
-  .strategy-badges {
-    display: grid;
-    gap: 8px;
-    margin-top: 15px;
-  }
+  .strategy-badges { display: grid; gap: 8px; margin-top: 15px; }
 
   .badge {
     font-size: 0.7rem;
@@ -253,15 +359,8 @@
     text-align: center;
   }
 
-  .badge-buy {
-    border-color: var(--accent-green);
-    color: var(--accent-green);
-  }
-
-  .badge-sell {
-    border-color: var(--accent-red);
-    color: var(--accent-red);
-  }
+  .badge-buy { border-color: var(--accent-green); color: var(--accent-green); }
+  .badge-sell { border-color: var(--accent-red); color: var(--accent-red); }
 
   .profit { color: var(--accent-green); }
   .loss { color: var(--accent-red); }
@@ -283,23 +382,12 @@
     font-size: 0.8rem;
   }
 
-  #order-list li:last-child {
-    border-bottom: none;
-  }
+  #order-list li:last-child { border-bottom: none; }
 
   .order-buy { border-left: 3px solid var(--accent-green); padding-left: 9px; }
   .order-sell { border-left: 3px solid var(--accent-red); padding-left: 9px; }
-
-  .order-time {
-    color: var(--text-secondary);
-    font-size: 0.75rem;
-  }
-
-  .order-price {
-    font-weight: 600;
-    font-size: 0.9rem;
-    margin-top: 3px;
-  }
+  .order-time { color: var(--text-secondary); font-size: 0.75rem; }
+  .order-price { font-weight: 600; font-size: 0.9rem; margin-top: 3px; }
 
   table {
     width: 100%;
@@ -308,11 +396,7 @@
     font-size: 0.85rem;
   }
 
-  th, td {
-    padding: 10px;
-    text-align: left;
-    border-bottom: 1px solid var(--border-color);
-  }
+  th, td { padding: 10px; text-align: left; border-bottom: 1px solid var(--border-color); }
 
   th {
     font-weight: 600;
@@ -320,10 +404,7 @@
     background-color: var(--bg-tertiary);
   }
 
-  .history-container {
-    grid-column: 1 / -1;
-    margin-top: 10px;
-  }
+  .history-container { grid-column: 1 / -1; margin-top: 10px; }
 
   .chart-controls {
     display: flex;
@@ -343,14 +424,8 @@
     transition: background-color 0.2s ease;
   }
 
-  .chart-btn:hover {
-    background-color: var(--border-color);
-  }
-
-  .chart-btn.active {
-    background-color: var(--accent-blue);
-    border-color: var(--accent-blue);
-  }
+  .chart-btn:hover { background-color: var(--border-color); }
+  .chart-btn.active { background-color: var(--accent-blue); border-color: var(--accent-blue); }
 
   .drawing-tools {
     display: flex;
@@ -373,29 +448,13 @@
     gap: 5px;
   }
 
-  .drawing-btn:hover {
-    background-color: var(--border-color);
-  }
+  .drawing-btn:hover { background-color: var(--border-color); }
+  .drawing-btn.active { background-color: var(--accent-blue); border-color: var(--accent-blue); }
 
-  .drawing-btn.active {
-    background-color: var(--accent-blue);
-    border-color: var(--accent-blue);
-  }
+  .drawing-btn.danger { border-color: var(--accent-red); color: var(--accent-red); }
+  .drawing-btn.danger:hover { background-color: rgba(248, 81, 73, 0.2); }
 
-  .drawing-btn.danger {
-    border-color: var(--accent-red);
-    color: var(--accent-red);
-  }
-
-  .drawing-btn.danger:hover {
-    background-color: rgba(248, 81, 73, 0.2);
-  }
-
-  .position-tools {
-    display: flex;
-    gap: 8px;
-    margin-bottom: 15px;
-  }
+  .position-tools { display: flex; gap: 8px; margin-bottom: 15px; }
 
   .position-btn {
     flex: 1;
@@ -408,42 +467,14 @@
     transition: all 0.2s ease;
   }
 
-  .position-btn.long {
-    background-color: var(--accent-green);
-    color: white;
-  }
+  .position-btn.long { background-color: var(--accent-green); color: white; }
+  .position-btn.long:hover { background-color: #2ea043; }
+  .position-btn.long.active { background-color: var(--accent-blue); }
+  .position-btn.short { background-color: var(--accent-red); color: white; }
+  .position-btn.short:hover { background-color: #da3633; }
+  .position-btn.short.active { background-color: var(--accent-blue); }
 
-  .position-btn.long:hover {
-    background-color: #2ea043;
-  }
-
-  .position-btn.long.active {
-    background-color: var(--accent-blue);
-    border-color: var(--accent-blue);
-  }
-
-  .position-btn.short {
-    background-color: var(--accent-red);
-    color: white;
-  }
-
-  .position-btn.short:hover {
-    background-color: #da3633;
-  }
-
-  .position-btn.short.active {
-    background-color: var(--accent-blue);
-    border-color: var(--accent-blue);
-  }
-
-  .risk-indicator {
-    display: inline-block;
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    margin-right: 5px;
-  }
-
+  .risk-indicator { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 5px; }
   .risk-low { background-color: var(--accent-green); }
   .risk-medium { background-color: var(--accent-yellow); }
   .risk-high { background-color: var(--accent-red); }
@@ -460,27 +491,11 @@
     margin-bottom: 10px;
   }
 
-  .trading-status-banner.paused {
-    border-color: var(--accent-yellow);
-    background-color: rgba(240, 196, 66, 0.1);
-  }
+  .trading-status-banner.paused { border-color: var(--accent-yellow); background-color: rgba(240, 196, 66, 0.1); }
+  .trading-status-banner.outside-hours { border-color: var(--accent-blue); background-color: rgba(88, 166, 255, 0.1); }
+  .trading-status-banner.force-start { border-color: var(--accent-orange); background-color: rgba(253, 126, 20, 0.1); }
 
-  .trading-status-banner.outside-hours {
-    border-color: var(--accent-blue);
-    background-color: rgba(88, 166, 255, 0.1);
-  }
-
-  .trading-status-banner.force-start {
-    border-color: var(--accent-orange);
-    background-color: rgba(253, 126, 20, 0.1);
-  }
-
-  .status-text {
-    display: flex;
-    align-items: center;
-    font-weight: 600;
-    font-size: 1.1rem;
-  }
+  .status-text { display: flex; align-items: center; font-weight: 600; font-size: 1.1rem; }
 
   .status-badge {
     margin-left: 10px;
@@ -490,37 +505,14 @@
     font-weight: 600;
   }
 
-  .status-badge.active {
-    background-color: var(--accent-green);
-    color: white;
-  }
+  .status-badge.active { background-color: var(--accent-green); color: white; }
+  .status-badge.paused { background-color: var(--accent-yellow); color: var(--bg-primary); }
+  .status-badge.stopped { background-color: var(--accent-red); color: white; }
+  .status-badge.force-active { background-color: var(--accent-orange); color: white; }
 
-  .status-badge.paused {
-    background-color: var(--accent-yellow);
-    color: var(--bg-primary);
-  }
+  .trading-hours { font-size: 0.85rem; color: var(--text-secondary); margin-top: 5px; }
 
-  .status-badge.stopped {
-    background-color: var(--accent-red);
-    color: white;
-  }
-
-  .status-badge.force-active {
-    background-color: var(--accent-orange);
-    color: white;
-  }
-
-  .trading-hours {
-    font-size: 0.85rem;
-    color: var(--text-secondary);
-    margin-top: 5px;
-  }
-
-  .control-buttons {
-    display: flex;
-    gap: 10px;
-    flex-wrap: wrap;
-  }
+  .control-buttons { display: flex; gap: 10px; flex-wrap: wrap; }
 
   .btn-start, .btn-stop, .btn-force-start, .btn-force-stop {
     padding: 8px 15px;
@@ -532,41 +524,14 @@
     transition: all 0.2s ease;
   }
 
-  .btn-start {
-    background-color: var(--accent-green);
-    color: white;
-  }
-
-  .btn-start:hover {
-    background-color: #2ea043;
-  }
-
-  .btn-stop {
-    background-color: var(--accent-red);
-    color: white;
-  }
-
-  .btn-stop:hover {
-    background-color: #da3633;
-  }
-
-  .btn-force-start {
-    background-color: var(--accent-orange);
-    color: white;
-  }
-
-  .btn-force-start:hover {
-    background-color: #e36609;
-  }
-
-  .btn-force-stop {
-    background-color: #8b0000;
-    color: white;
-  }
-
-  .btn-force-stop:hover {
-    background-color: #a52a2a;
-  }
+  .btn-start { background-color: var(--accent-green); color: white; }
+  .btn-start:hover { background-color: #2ea043; }
+  .btn-stop { background-color: var(--accent-red); color: white; }
+  .btn-stop:hover { background-color: #da3633; }
+  .btn-force-start { background-color: var(--accent-orange); color: white; }
+  .btn-force-start:hover { background-color: #e36609; }
+  .btn-force-stop { background-color: #8b0000; color: white; }
+  .btn-force-stop:hover { background-color: #a52a2a; }
 
   .force-mode-indicator {
     display: inline-block;
@@ -580,1344 +545,1015 @@
   }
 
   @media (max-width: 1200px) {
-    .container {
-      grid-template-columns: 1fr;
-    }
-
-    .chart-container {
-      grid-column: 1 / -1;
-    }
-
-    .chart-wrapper {
-      height: 400px;
-    }
+    .container { grid-template-columns: 1fr; }
+    .chart-container { grid-column: 1 / -1; }
+    .chart-wrapper { height: 400px; }
+    .manual-controls-grid { grid-template-columns: 1fr; }
   }
 </style>
 </head>
 <body>
-  <div class="container">
-    <h1>🎯 UT Bot Trading Dashboard - Risk Management</h1>
-    
-    <!-- Trading Control Banner -->
-    <div id="trading-status-banner" class="trading-status-banner" style="grid-column: 1 / -1;">
-      <div>
-        <div class="status-text" id="status-text">
-          ▶️ Trading Active
-          <span class="status-badge active" id="status-badge">RUNNING</span>
-          <span class="force-mode-indicator" id="force-indicator" style="display: none;">FORCE MODE</span>
-        </div>
-        <div class="trading-hours" id="trading-hours">Trading Hours: 18:00 - 23:00 | Current: --:--</div>
+<div class="container">
+  <h1>🎯 UT Bot Trading Dashboard - Risk Management</h1>
+
+  <!-- Trading Control Banner -->
+  <div id="trading-status-banner" class="trading-status-banner" style="grid-column: 1 / -1;">
+    <div>
+      <div class="status-text" id="status-text">
+        ▶️ Trading Active
+        <span class="status-badge active" id="status-badge">RUNNING</span>
+        <span class="force-mode-indicator" id="force-indicator" style="display: none;">FORCE MODE</span>
       </div>
-      <div class="control-buttons">
-        <button id="btn-start" class="btn-start" onclick="startTrading()" style="display: none;">▶️ START TRADING</button>
-        <button id="btn-stop" class="btn-stop" onclick="stopTrading()">⏹️ STOP TRADING</button>
-        <button id="btn-force-start" class="btn-force-start" onclick="forceStartTrading()">🔥 FORCE START</button>
-        <button id="btn-force-stop" class="btn-force-stop" onclick="forceStopTrading()">🛑 FORCE STOP</button>
-      </div>
+      <div class="trading-hours" id="trading-hours">Trading Hours: 18:00 - 23:00 | Current: --:--</div>
     </div>
-    
-    <!-- Chart Section -->
-    <div class="chart-container">
-      <h2>BTCUSDT Price Chart (5m)</h2>
-      
-      <!-- Drawing Tools -->
-      <div class="drawing-tools">
-        <button class="drawing-btn active" id="cursor-btn" onclick="setDrawingMode('cursor')">
-          <span>↖️</span> Cursor
-        </button>
-        <button class="drawing-btn" id="hline-btn" onclick="setDrawingMode('hline')">
-          <span>➖</span> Horizontal Line
-        </button>
-        <button class="drawing-btn" id="trendline-btn" onclick="setDrawingMode('trendline')">
-          <span>📈</span> Trend Line
-        </button>
-        <button class="drawing-btn danger" id="clear-btn" onclick="clearDrawings()">
-          <span>🗑️</span> Clear All
-        </button>
+    <div class="control-buttons">
+      <button id="btn-start" class="btn-start" onclick="startTrading()" style="display: none;">▶️ START TRADING</button>
+      <button id="btn-stop" class="btn-stop" onclick="stopTrading()">⏹️ STOP TRADING</button>
+      <button id="btn-force-start" class="btn-force-start" onclick="forceStartTrading()">🔥 FORCE START</button>
+      <button id="btn-force-stop" class="btn-force-stop" onclick="forceStopTrading()">🛑 FORCE STOP</button>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════
+       ✅ MANUAL CONTROLS CARD (NEW)
+       ══════════════════════════════════════════════ -->
+  <div class="manual-controls-card" style="grid-column: 1 / -1;">
+    <h2>⚙️ Manual Overrides</h2>
+    <div class="manual-controls-grid">
+
+      <!-- Manual Price Override -->
+      <div class="manual-control-block">
+        <h3>💵 Manual USDT Price Override</h3>
+        <div class="manual-input-row">
+          <input
+            type="number"
+            id="manual-price-input"
+            class="manual-input"
+            placeholder="e.g. 84500.00"
+            step="0.01"
+            min="0"
+          />
+          <button class="manual-btn manual-btn-set" onclick="setManualPrice()">Set Price</button>
+          <button class="manual-btn manual-btn-clear" onclick="clearManualPrice()">Clear</button>
+        </div>
+        <div class="manual-status" id="price-status">
+          <span style="color: var(--text-secondary);">⬤ Using live price from server</span>
+        </div>
       </div>
-      
-      <!-- Position Projection Tools -->
-      <div class="position-tools">
-        <button class="position-btn long" id="long-btn" onclick="setDrawingMode('long')">
-          📊 Long Position
-        </button>
-        <button class="position-btn short" id="short-btn" onclick="setDrawingMode('short')">
-          📊 Short Position
-        </button>
+
+      <!-- Manual Lot Size Override -->
+      <div class="manual-control-block">
+        <h3>📦 Manual Lot Size (BTC)</h3>
+        <div class="manual-input-row">
+          <input
+            type="number"
+            id="manual-lot-input"
+            class="manual-input"
+            placeholder="e.g. 0.005"
+            step="0.0001"
+            min="0.0001"
+            max="0.01"
+          />
+          <button class="manual-btn manual-btn-set" onclick="setManualLot()">Apply</button>
+          <button class="manual-btn manual-btn-clear" onclick="clearManualLot()">Reset</button>
+        </div>
+        <div class="manual-status" id="lot-status">
+          <span style="color: var(--text-secondary);">⬤ Using auto position sizing from bot</span>
+        </div>
       </div>
-      
-      <div class="chart-controls">
-        <button class="chart-btn" onclick="refreshChart()">📊 Refresh Chart</button>
-        <span style="color: var(--text-secondary); font-size: 0.85rem; padding: 8px;">Last Updated: <span id="chart-time">--:--</span></span>
-      </div>
-      <div class="chart-wrapper">
-        <canvas id="priceChart"></canvas>
-      </div>
+
+    </div>
+  </div>
+
+  <!-- Chart Section -->
+  <div class="chart-container">
+    <h2>BTCUSDT Price Chart (5m)</h2>
+
+    <div class="drawing-tools">
+      <button class="drawing-btn active" id="cursor-btn" onclick="setDrawingMode('cursor')">
+        <span>↖️</span> Cursor
+      </button>
+      <button class="drawing-btn" id="hline-btn" onclick="setDrawingMode('hline')">
+        <span>➖</span> Horizontal Line
+      </button>
+      <button class="drawing-btn" id="trendline-btn" onclick="setDrawingMode('trendline')">
+        <span>📈</span> Trend Line
+      </button>
+      <button class="drawing-btn danger" id="clear-btn" onclick="clearDrawings()">
+        <span>🗑️</span> Clear All
+      </button>
     </div>
 
-    <!-- Status & Info Section -->
-    <div class="info-section">
-      <!-- Status Card -->
-      <div class="status-card">
-        <div class="price-display" id="price">$Loading...</div>
-        <div class="signal" id="signal">Waiting...</div>
-        <div class="action-msg" id="action-msg">Initializing...</div>
-        
-        <div class="info-grid">
-          <div class="info-item">
-            <span>Balance</span>
-            <strong id="balance">₹--</strong>
-          </div>
-          <div class="info-item">
-            <span>Position</span>
-            <strong id="position">NONE</strong>
-          </div>
+    <div class="position-tools">
+      <button class="position-btn long" id="long-btn" onclick="setDrawingMode('long')">
+        📊 Long Position
+      </button>
+      <button class="position-btn short" id="short-btn" onclick="setDrawingMode('short')">
+        📊 Short Position
+      </button>
+    </div>
+
+    <div class="chart-controls">
+      <button class="chart-btn" onclick="refreshChart()">📊 Refresh Chart</button>
+      <span style="color: var(--text-secondary); font-size: 0.85rem; padding: 8px;">Last Updated: <span id="chart-time">--:--</span></span>
+    </div>
+    <div class="chart-wrapper">
+      <canvas id="priceChart"></canvas>
+    </div>
+  </div>
+
+  <!-- Status & Info Section -->
+  <div class="info-section">
+    <!-- Status Card -->
+    <div class="status-card">
+      <div class="price-display" id="price">$Loading...</div>
+      <div class="signal" id="signal">Waiting...</div>
+      <div class="action-msg" id="action-msg">Initializing...</div>
+
+      <div class="info-grid">
+        <div class="info-item">
+          <span>Balance</span>
+          <strong id="balance">₹--</strong>
         </div>
-
-        <div class="info-grid">
-          <div class="info-item">
-            <span>Entry Price</span>
-            <strong id="entry-price">N/A</strong>
-          </div>
-          <div class="info-item">
-            <span>Position Size</span>
-            <strong id="position-size">0 BTC</strong>
-          </div>
-        </div>
-
-        <div class="info-grid">
-          <div class="info-item">
-            <span>Live P/L</span>
-            <strong id="live-pl">N/A</strong>
-          </div>
-          <div class="info-item">
-            <span>Stop-Loss</span>
-            <strong id="stop-loss-display">N/A</strong>
-          </div>
-        </div>
-
-        <!-- Risk Management Panel -->
-        <div class="risk-panel">
-          <h3 style="margin: 0 0 10px 0; font-size: 1rem;">🛡️ Risk Management</h3>
-          
-          <div class="risk-item">
-            <span class="risk-label">Stop-Loss:</span>
-            <span class="risk-value" id="stop-loss">N/A</span>
-          </div>
-          
-          <div id="tp-levels-container" style="margin-top: 10px;">
-            <!-- TP levels will be inserted here -->
-          </div>
-
-          <div class="risk-item" style="margin-top: 10px;">
-            <span class="risk-label">ATR (14):</span>
-            <span class="risk-value" id="atr-value">--</span>
-          </div>
-        </div>
-
-        <div class="strategy-badges">
-          <div class="badge badge-buy">#2: Buy (KV=2, ATR=300)</div>
-          <div class="badge badge-sell">#1: Sell (KV=2, ATR=1)</div>
+        <div class="info-item">
+          <span>Position</span>
+          <strong id="position">NONE</strong>
         </div>
       </div>
 
-      <!-- Daily Limits Card -->
-      <div class="card">
-        <h2>📊 Daily Limits</h2>
-        <div class="daily-limits">
-          <div class="limit-bar">
-            <div class="limit-label">Trades: <span id="trades-count">0/20</span></div>
-            <div class="progress-bar">
-              <div class="progress-fill" id="trades-progress" style="width: 0%"></div>
-            </div>
-          </div>
-          
-          <div class="limit-bar">
-            <div class="limit-label">Daily Loss: <span id="loss-count">₹0/₹1000</span></div>
-            <div class="progress-bar">
-              <div class="progress-fill" id="loss-progress" style="width: 0%"></div>
-            </div>
-          </div>
-          
-          <div class="limit-bar">
-            <div class="limit-label">Consecutive Losses: <span id="consec-losses">0/5</span></div>
-            <div class="progress-bar">
-              <div class="progress-fill" id="consec-progress" style="width: 0%"></div>
-            </div>
-          </div>
+      <div class="info-grid">
+        <div class="info-item">
+          <span>Entry Price</span>
+          <strong id="entry-price">N/A</strong>
+        </div>
+        <div class="info-item">
+          <span>Position Size</span>
+          <strong id="position-size">0 BTC</strong>
         </div>
       </div>
 
-      <!-- Order Log Card -->
-      <div class="card">
-        <h2>📝 Live Orders</h2>
-        <ul id="order-list">
-          <li style="color: var(--text-secondary); text-align: center;">Fetching orders...</li>
-        </ul>
+      <div class="info-grid">
+        <div class="info-item">
+          <span>Live P/L</span>
+          <strong id="live-pl">N/A</strong>
+        </div>
+        <div class="info-item">
+          <span>Stop-Loss</span>
+          <strong id="stop-loss-display">N/A</strong>
+        </div>
       </div>
 
-      <!-- Performance Card -->
-      <div class="card">
-        <h2>📈 Performance</h2>
-        <table>
-          <tr>
-            <td>Total Trades:</td>
-            <td style="text-align: right;"><strong id="total-trades">0</strong></td>
-          </tr>
-          <tr>
-            <td>Win Rate:</td>
-            <td style="text-align: right;"><strong id="win-rate">0%</strong></td>
-          </tr>
-          <tr>
-            <td>Wins/Losses:</td>
-            <td style="text-align: right;"><strong id="win-loss">0/0</strong></td>
-          </tr>
-          <tr>
-            <td>Total P/L:</td>
-            <td style="text-align: right;"><strong id="total-pl" class="profit">₹0</strong></td>
-          </tr>
-        </table>
+      <!-- Risk Management Panel -->
+      <div class="risk-panel">
+        <h3 style="margin: 0 0 10px 0; font-size: 1rem;">🛡️ Risk Management</h3>
+        <div class="risk-item">
+          <span class="risk-label">Stop-Loss:</span>
+          <span class="risk-value" id="stop-loss">N/A</span>
+        </div>
+        <div id="tp-levels-container" style="margin-top: 10px;"></div>
+        <div class="risk-item" style="margin-top: 10px;">
+          <span class="risk-label">ATR (14):</span>
+          <span class="risk-value" id="atr-value">--</span>
+        </div>
+      </div>
+
+      <div class="strategy-badges">
+        <div class="badge badge-buy">#2: Buy (KV=2, ATR=300)</div>
+        <div class="badge badge-sell">#1: Sell (KV=2, ATR=1)</div>
       </div>
     </div>
 
-    <!-- Trade History -->
-    <div class="card history-container">
-      <h2>📜 Trade History</h2>
+    <!-- Daily Limits Card -->
+    <div class="card">
+      <h2>📊 Daily Limits</h2>
+      <div class="daily-limits">
+        <div class="limit-bar">
+          <div class="limit-label">Trades: <span id="trades-count">0/20</span></div>
+          <div class="progress-bar">
+            <div class="progress-fill" id="trades-progress" style="width: 0%"></div>
+          </div>
+        </div>
+        <div class="limit-bar">
+          <div class="limit-label">Daily Loss: <span id="loss-count">₹0/₹1000</span></div>
+          <div class="progress-bar">
+            <div class="progress-fill" id="loss-progress" style="width: 0%"></div>
+          </div>
+        </div>
+        <div class="limit-bar">
+          <div class="limit-label">Consecutive Losses: <span id="consec-losses">0/5</span></div>
+          <div class="progress-bar">
+            <div class="progress-fill" id="consec-progress" style="width: 0%"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Order Log Card -->
+    <div class="card">
+      <h2>📝 Live Orders</h2>
+      <ul id="order-list">
+        <li style="color: var(--text-secondary); text-align: center;">Fetching orders...</li>
+      </ul>
+    </div>
+
+    <!-- Performance Card -->
+    <div class="card">
+      <h2>📈 Performance</h2>
       <table>
-        <thead>
-          <tr>
-            <th>Type</th>
-            <th>Entry</th>
-            <th>Exit</th>
-            <th>P/L (₹)</th>
-            <th>Exit Reason</th>
-          </tr>
-        </thead>
-        <tbody id="history-body">
-          <tr><td colspan="5" style="text-align: center; color: var(--text-secondary);">No trades yet</td></tr>
-        </tbody>
+        <tr>
+          <td>Total Trades:</td>
+          <td style="text-align: right;"><strong id="total-trades">0</strong></td>
+        </tr>
+        <tr>
+          <td>Win Rate:</td>
+          <td style="text-align: right;"><strong id="win-rate">0%</strong></td>
+        </tr>
+        <tr>
+          <td>Wins/Losses:</td>
+          <td style="text-align: right;"><strong id="win-loss">0/0</strong></td>
+        </tr>
+        <tr>
+          <td>Total P/L:</td>
+          <td style="text-align: right;"><strong id="total-pl" class="profit">₹0</strong></td>
+        </tr>
       </table>
     </div>
   </div>
 
-  <script>
-    let chartInstance = null;
-    let isStopped = false;
-    let drawingMode = 'cursor'; // cursor, hline, trendline, long, short
-    let isDrawing = false;
-    let startX, startY;
-    let currentAnnotation = null;
-    
-    // Persistent storage for drawings
-    let savedDrawings = {
-      horizontalLines: [],
-      trendlines: [],
-      positionProjections: []
-    };
+  <!-- Trade History -->
+  <div class="card history-container">
+    <h2>📜 Trade History</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Entry</th>
+          <th>Exit</th>
+          <th>P/L (₹)</th>
+          <th>Exit Reason</th>
+        </tr>
+      </thead>
+      <tbody id="history-body">
+        <tr><td colspan="5" style="text-align: center; color: var(--text-secondary);">No trades yet</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
 
-    async function startTrading() {
+<script>
+  let chartInstance = null;
+  let isStopped = false;
+  let drawingMode = 'cursor';
+  let isDrawing = false;
+  let startX, startY;
+  let currentAnnotation = null;
+
+  let savedDrawings = {
+    horizontalLines: [],
+    trendlines: [],
+    positionProjections: []
+  };
+
+  // ══════════════════════════════════════════════
+  // ✅ MANUAL OVERRIDE STATE
+  // ══════════════════════════════════════════════
+  let manualPriceOverride = null;  // null = use live price; number = override
+  let manualLotOverride = null;    // null = use bot auto-sizing; number = override
+
+  // ─── Manual Price Functions ───
+  function setManualPrice() {
+    const input = document.getElementById('manual-price-input');
+    const val = parseFloat(input.value);
+
+    if (isNaN(val) || val <= 0) {
+      showStatus('price-status', 'error', '❌ Enter a valid positive price');
+      return;
+    }
+
+    manualPriceOverride = val;
+    showStatus('price-status', 'active', `✅ Overriding live price with $${val.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`);
+
+    // Immediately update the displayed price
+    const priceEl = document.getElementById('price');
+    priceEl.innerHTML = `$${val.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})} <span class="override-badge">MANUAL</span>`;
+  }
+
+  function clearManualPrice() {
+    manualPriceOverride = null;
+    document.getElementById('manual-price-input').value = '';
+    showStatus('price-status', '', '⬤ Using live price from server');
+    document.getElementById('price').textContent = '$--';
+  }
+
+  // ─── Manual Lot Size Functions ───
+  async function setManualLot() {
+    const input = document.getElementById('manual-lot-input');
+    const val = parseFloat(input.value);
+
+    if (isNaN(val) || val <= 0) {
+      showStatus('lot-status', 'error', '❌ Enter a valid lot size (e.g. 0.005)');
+      return;
+    }
+    if (val < 0.0001 || val > 0.01) {
+      showStatus('lot-status', 'error', '❌ Lot size must be between 0.0001 and 0.01 BTC');
+      return;
+    }
+
+    manualLotOverride = val;
+    showStatus('lot-status', 'active', `⏳ Applying lot size ${val} BTC to bot...`);
+
+    try {
+      // Fetch current config, update position_sizing, push back
+      const configRes = await fetch('/risk-config');
+      const config = await configRes.json();
+
+      config.position_sizing.method = 'fixed';
+      config.position_sizing.value = val;
+      config.position_sizing.min_position_size = val;
+      config.position_sizing.max_position_size = val;
+
+      const saveRes = await fetch('/risk-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config)
+      });
+
+      const result = await saveRes.json();
+
+      if (result.success) {
+        showStatus('lot-status', 'success', `✅ Lot size set to ${val} BTC — bot will use this for next trade`);
+      } else {
+        showStatus('lot-status', 'error', '❌ Failed to save to bot: ' + (result.error || 'unknown error'));
+        manualLotOverride = null;
+      }
+    } catch (err) {
+      showStatus('lot-status', 'error', '❌ Could not reach bot: ' + err.message);
+      manualLotOverride = null;
+    }
+  }
+
+  async function clearManualLot() {
+    manualLotOverride = null;
+    document.getElementById('manual-lot-input').value = '';
+    showStatus('lot-status', 'active', '⏳ Resetting to auto position sizing...');
+
+    try {
+      const configRes = await fetch('/risk-config');
+      const config = await configRes.json();
+
+      config.position_sizing.method = 'percentage';
+      config.position_sizing.value = 5.0;
+      config.position_sizing.min_position_size = 0.0001;
+      config.position_sizing.max_position_size = 0.01;
+
+      const saveRes = await fetch('/risk-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config)
+      });
+
+      const result = await saveRes.json();
+      if (result.success) {
+        showStatus('lot-status', 'success', '✅ Reset to auto position sizing (5% of balance)');
+      } else {
+        showStatus('lot-status', 'error', '❌ Reset failed');
+      }
+    } catch (err) {
+      showStatus('lot-status', 'error', '❌ Could not reach bot: ' + err.message);
+    }
+  }
+
+  // ─── Status helper ───
+  function showStatus(elementId, type, message) {
+    const el = document.getElementById(elementId);
+    if (!el) return;
+    el.className = 'manual-status' + (type ? ' ' + type : '');
+    el.innerHTML = message;
+
+    // Auto-clear success after 4 seconds
+    if (type === 'success') {
+      setTimeout(() => {
+        if (el.classList.contains('success')) {
+          el.className = 'manual-status';
+          el.innerHTML = message.replace('✅', '⬤').replace('success', '');
+        }
+      }, 4000);
+    }
+  }
+
+  // Allow pressing Enter on inputs
+  document.addEventListener('DOMContentLoaded', () => {
+    document.getElementById('manual-price-input').addEventListener('keydown', e => {
+      if (e.key === 'Enter') setManualPrice();
+    });
+    document.getElementById('manual-lot-input').addEventListener('keydown', e => {
+      if (e.key === 'Enter') setManualLot();
+    });
+  });
+
+  // ══════════════════════════════════════════════
+  // Trading Control Functions
+  // ══════════════════════════════════════════════
+  async function startTrading() {
+    try {
+      const response = await fetch('/trading-control', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({action: 'resume'})
+      });
+      const data = await response.json();
+      if (data.success) updateTradingStatusUI();
+    } catch (e) {
+      console.error('Error starting trading:', e);
+    }
+  }
+
+  async function stopTrading() {
+    if (confirm('⚠️ Are you sure you want to STOP trading?\n\nThis will prevent new positions from opening.\nExisting positions will remain open.')) {
       try {
         const response = await fetch('/trading-control', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({action: 'resume'})
+          body: JSON.stringify({action: 'pause'})
+        });
+        const data = await response.json();
+        if (data.success) updateTradingStatusUI();
+      } catch (e) {
+        console.error('Error stopping trading:', e);
+      }
+    }
+  }
+
+  async function forceStartTrading() {
+    if (confirm('🔥 FORCE START TRADING?\n\nThis will enable trading 24/7, ignoring trading hours.\nUse with caution!')) {
+      try {
+        const response = await fetch('/trading-control', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({action: 'force_start'})
         });
         const data = await response.json();
         if (data.success) {
           updateTradingStatusUI();
+          alert('✅ ' + data.message);
         }
       } catch (e) {
-        console.error('Error starting trading:', e);
+        console.error('Error force starting trading:', e);
       }
     }
+  }
 
-    async function stopTrading() {
-      if (confirm('⚠️ Are you sure you want to STOP trading?\n\nThis will prevent new positions from opening.\nExisting positions will remain open.')) {
-        try {
-          const response = await fetch('/trading-control', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({action: 'pause'})
-          });
-          const data = await response.json();
-          if (data.success) {
-            updateTradingStatusUI();
-          }
-        } catch (e) {
-          console.error('Error stopping trading:', e);
-        }
-      }
-    }
-
-    async function forceStartTrading() {
-      if (confirm('🔥 FORCE START TRADING?\n\nThis will enable trading 24/7, ignoring trading hours.\nUse with caution!')) {
-        try {
-          const response = await fetch('/trading-control', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({action: 'force_start'})
-          });
-          const data = await response.json();
-          if (data.success) {
-            updateTradingStatusUI();
-            alert('✅ ' + data.message);
-          }
-        } catch (e) {
-          console.error('Error force starting trading:', e);
-        }
-      }
-    }
-
-    async function forceStopTrading() {
-      if (confirm('🛑 FORCE STOP TRADING?\n\nThis will IMMEDIATELY close any open position at market price,\nregardless of profit or loss, and stop all trading.\n\nThis action cannot be undone!')) {
-        try {
-          const response = await fetch('/trading-control', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({action: 'force_stop'})
-          });
-          const data = await response.json();
-          if (data.success) {
-            updateTradingStatusUI();
-            fetchAndUpdate(); // Refresh the display
-            fetchHistory(); // Refresh history
-            alert('✅ ' + data.message);
-          }
-        } catch (e) {
-          console.error('Error force stopping trading:', e);
-        }
-      }
-    }
-
-    async function updateTradingStatusUI() {
+  async function forceStopTrading() {
+    if (confirm('🛑 FORCE STOP TRADING?\n\nThis will IMMEDIATELY close any open position at market price,\nregardless of profit or loss, and stop all trading.\n\nThis action cannot be undone!')) {
       try {
-        const response = await fetch('/trading-control');
+        const response = await fetch('/trading-control', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({action: 'force_stop'})
+        });
         const data = await response.json();
-        
-        // Check if elements exist before trying to access them
-        const banner = document.getElementById('trading-status-banner');
-        const statusText = document.getElementById('status-text');
-        const statusBadge = document.getElementById('status-badge');
-        const forceIndicator = document.getElementById('force-indicator');
-        const hoursText = document.getElementById('trading-hours');
-        const startBtn = document.getElementById('btn-start');
-        const stopBtn = document.getElementById('btn-stop');
-        const forceStartBtn = document.getElementById('btn-force-start');
-        const forceStopBtn = document.getElementById('btn-force-stop');
-        
-        // If any element is null, exit the function
-        if (!banner || !statusText || !statusBadge || !forceIndicator || 
-            !hoursText || !startBtn || !stopBtn || !forceStartBtn || !forceStopBtn) {
-          console.error('One or more UI elements not found');
-          return;
+        if (data.success) {
+          updateTradingStatusUI();
+          fetchAndUpdate();
+          fetchHistory();
+          alert('✅ ' + data.message);
         }
-        
-        isStopped = data.state.manual_pause;
-        
-        // Update banner style
-        banner.className = 'trading-status-banner';
-        
-        // Check if force start is active
-        if (data.state.force_start) {
-          // Force start mode
-          banner.classList.add('force-start');
-          statusText.innerHTML = '🔥 Force Trading Active <span class="status-badge force-active" id="status-badge">FORCE MODE</span>';
-          forceIndicator.style.display = 'inline-block';
+      } catch (e) {
+        console.error('Error force stopping trading:', e);
+      }
+    }
+  }
+
+  async function updateTradingStatusUI() {
+    try {
+      const response = await fetch('/trading-control');
+      const data = await response.json();
+
+      const banner = document.getElementById('trading-status-banner');
+      const statusText = document.getElementById('status-text');
+      const forceIndicator = document.getElementById('force-indicator');
+      const hoursText = document.getElementById('trading-hours');
+      const startBtn = document.getElementById('btn-start');
+      const stopBtn = document.getElementById('btn-stop');
+      const forceStartBtn = document.getElementById('btn-force-start');
+      const forceStopBtn = document.getElementById('btn-force-stop');
+
+      if (!banner || !statusText || !forceIndicator || !hoursText || !startBtn || !stopBtn || !forceStartBtn || !forceStopBtn) return;
+
+      isStopped = data.state.manual_pause;
+      banner.className = 'trading-status-banner';
+
+      if (data.state.force_start) {
+        banner.classList.add('force-start');
+        statusText.innerHTML = '🔥 Force Trading Active <span class="status-badge force-active">FORCE MODE</span>';
+        forceIndicator.style.display = 'inline-block';
+        startBtn.style.display = 'none';
+        stopBtn.style.display = 'none';
+        forceStartBtn.style.display = 'none';
+        forceStopBtn.style.display = 'block';
+      } else if (!data.trading_allowed) {
+        forceIndicator.style.display = 'none';
+        if (data.state.manual_pause) {
+          banner.classList.add('paused');
+          statusText.innerHTML = '⏹️ Trading Stopped <span class="status-badge stopped">STOPPED</span>';
+          startBtn.style.display = 'block';
+          stopBtn.style.display = 'none';
+          forceStartBtn.style.display = 'block';
+          forceStopBtn.style.display = 'block';
+        } else {
+          banner.classList.add('outside-hours');
+          statusText.innerHTML = '⏰ Outside Trading Hours <span class="status-badge paused">WAITING</span>';
           startBtn.style.display = 'none';
           stopBtn.style.display = 'none';
-          forceStartBtn.style.display = 'none';
-          forceStopBtn.style.display = 'block';
-        } else if (!data.trading_allowed) {
-          forceIndicator.style.display = 'none';
-          if (data.state.manual_pause) {
-            // Manually stopped
-            banner.classList.add('paused');
-            statusText.innerHTML = '⏹️ Trading Stopped <span class="status-badge stopped" id="status-badge">STOPPED</span>';
-            startBtn.style.display = 'block';
-            stopBtn.style.display = 'none';
-            forceStartBtn.style.display = 'block';
-            forceStopBtn.style.display = 'block';
-          } else {
-            // Outside trading hours
-            banner.classList.add('outside-hours');
-            statusText.innerHTML = '⏰ Outside Trading Hours <span class="status-badge paused" id="status-badge">WAITING</span>';
-            startBtn.style.display = 'none';
-            stopBtn.style.display = 'none';
-            forceStartBtn.style.display = 'block';
-            forceStopBtn.style.display = 'block';
-          }
-        } else {
-          // Trading active
-          forceIndicator.style.display = 'none';
-          statusText.innerHTML = '▶️ Trading Active <span class="status-badge active" id="status-badge">RUNNING</span>';
-          startBtn.style.display = 'none';
-          stopBtn.style.display = 'block';
           forceStartBtn.style.display = 'block';
           forceStopBtn.style.display = 'block';
         }
-        
-        // Update trading hours
-        if (data.state.enabled) {
-          const startHour = String(data.state.start_hour).padStart(2, '0');
-          const endHour = String(data.state.end_hour).padStart(2, '0');
-          hoursText.textContent = `Trading Hours: ${startHour}:00 - ${endHour}:00 | Current: ${data.current_time}`;
-        } else {
-          hoursText.textContent = `Trading Hours: 24/7 (Always Active) | Current: ${data.current_time}`;
-        }
-        
-      } catch (e) {
-        console.error('Error updating trading status:', e);
+      } else {
+        forceIndicator.style.display = 'none';
+        statusText.innerHTML = '▶️ Trading Active <span class="status-badge active">RUNNING</span>';
+        startBtn.style.display = 'none';
+        stopBtn.style.display = 'block';
+        forceStartBtn.style.display = 'block';
+        forceStopBtn.style.display = 'block';
       }
-    }
 
-    // Drawing tools functions
-    function setDrawingMode(mode) {
-      drawingMode = mode;
-      
-      // Update button states
-      document.querySelectorAll('.drawing-btn').forEach(btn => {
-        btn.classList.remove('active');
-      });
-      
-      document.querySelectorAll('.position-btn').forEach(btn => {
-        btn.classList.remove('active');
-      });
-      
-      if (mode === 'cursor') {
-        document.getElementById('cursor-btn').classList.add('active');
-      } else if (mode === 'hline') {
-        document.getElementById('hline-btn').classList.add('active');
-      } else if (mode === 'trendline') {
-        document.getElementById('trendline-btn').classList.add('active');
-      } else if (mode === 'long') {
-        document.getElementById('long-btn').classList.add('active');
-      } else if (mode === 'short') {
-        document.getElementById('short-btn').classList.add('active');
+      if (data.state.enabled) {
+        const startHour = String(data.state.start_hour).padStart(2, '0');
+        const endHour = String(data.state.end_hour).padStart(2, '0');
+        hoursText.textContent = `Trading Hours: ${startHour}:00 - ${endHour}:00 | Current: ${data.current_time}`;
+      } else {
+        hoursText.textContent = `Trading Hours: 24/7 (Always Active) | Current: ${data.current_time}`;
       }
+    } catch (e) {
+      console.error('Error updating trading status:', e);
     }
+  }
 
-    function clearDrawings() {
-      if (confirm('Are you sure you want to clear all drawings?')) {
-        savedDrawings = {
-          horizontalLines: [],
-          trendlines: [],
-          positionProjections: []
-        };
-        
-        if (chartInstance) {
-          chartInstance.options.plugins.annotation.annotations = {};
-          chartInstance.update();
-        }
-      }
-    }
+  // ══════════════════════════════════════════════
+  // Drawing Tools
+  // ══════════════════════════════════════════════
+  function setDrawingMode(mode) {
+    drawingMode = mode;
+    document.querySelectorAll('.drawing-btn').forEach(btn => btn.classList.remove('active'));
+    document.querySelectorAll('.position-btn').forEach(btn => btn.classList.remove('active'));
+    const map = { cursor: 'cursor-btn', hline: 'hline-btn', trendline: 'trendline-btn', long: 'long-btn', short: 'short-btn' };
+    if (map[mode]) document.getElementById(map[mode]).classList.add('active');
+  }
 
-    function handleMouseDown(event) {
-      if (drawingMode === 'cursor') return;
-      
-      const rect = chartInstance.canvas.getBoundingClientRect();
-      const canvasPosition = Chart.helpers.getRelativePosition(event, chartInstance);
-      const dataX = chartInstance.scales.x.getValueForPixel(canvasPosition.x);
-      const dataY = chartInstance.scales.y.getValueForPixel(canvasPosition.y);
-      
-      startX = dataX;
-      startY = dataY;
-      isDrawing = true;
-      
-      if (drawingMode === 'hline') {
-        // Create a temporary horizontal line
-        const id = 'hline_' + Date.now();
-        currentAnnotation = {
-          type: 'line',
-          xMin: chartInstance.scales.x.min,
-          xMax: chartInstance.scales.x.max,
-          yMin: startY,
-          yMax: startY,
-          borderColor: '#f0c442',
-          borderWidth: 2,
-          label: {
-            content: '$' + startY.toFixed(2),
-            enabled: true,
-            position: 'end',
-            backgroundColor: '#f0c442',
-            font: {
-              size: 12
-            }
-          }
-        };
-        
-        if (!chartInstance.options.plugins.annotation.annotations) {
-          chartInstance.options.plugins.annotation.annotations = {};
-        }
-        
-        chartInstance.options.plugins.annotation.annotations[id] = currentAnnotation;
-        chartInstance.update();
-      } else if (drawingMode === 'trendline') {
-        // Create a temporary trend line
-        const id = 'trendline_' + Date.now();
-        currentAnnotation = {
-          type: 'line',
-          xMin: startX,
-          yMin: startY,
-          xMax: startX,
-          yMax: startY,
-          borderColor: '#58a6ff',
-          borderWidth: 2,
-          label: {
-            content: 'Trend Line',
-            enabled: true,
-            position: 'center',
-            backgroundColor: '#58a6ff',
-            font: {
-              size: 12
-            }
-          }
-        };
-        
-        if (!chartInstance.options.plugins.annotation.annotations) {
-          chartInstance.options.plugins.annotation.annotations = {};
-        }
-        
-        chartInstance.options.plugins.annotation.annotations[id] = currentAnnotation;
-        chartInstance.update();
-      } else if (drawingMode === 'long' || drawingMode === 'short') {
-        // Create a temporary position projection
-        const id = 'position_' + drawingMode + '_' + Date.now();
-        const isLong = drawingMode === 'long';
-        const entryPrice = startY;
-        
-        // Calculate projection levels (example values)
-        const stopLoss = isLong ? entryPrice * 0.98 : entryPrice * 1.02; // 2% SL
-        const tp1 = isLong ? entryPrice * 1.02 : entryPrice * 0.98; // 2% TP
-        const tp2 = isLong ? entryPrice * 1.04 : entryPrice * 0.96; // 4% TP
-        const tp3 = isLong ? entryPrice * 1.06 : entryPrice * 0.94; // 6% TP
-        
-        currentAnnotation = {
-          entry: {
-            type: 'line',
-            xMin: startX,
-            xMax: startX,
-            yMin: entryPrice,
-            yMax: entryPrice,
-            borderColor: isLong ? '#3fb950' : '#f85149',
-            borderWidth: 2,
-            borderDash: [5, 5],
-            label: {
-              content: 'Entry: $' + entryPrice.toFixed(2),
-              enabled: true,
-              position: 'start',
-              backgroundColor: isLong ? '#3fb950' : '#f85149',
-              font: {
-                size: 12
-              }
-            }
-          },
-          sl: {
-            type: 'line',
-            xMin: startX,
-            xMax: startX,
-            yMin: stopLoss,
-            yMax: stopLoss,
-            borderColor: '#ff5252',
-            borderWidth: 2,
-            borderDash: [5, 5],
-            label: {
-              content: 'SL: $' + stopLoss.toFixed(2),
-              enabled: true,
-              position: 'start',
-              backgroundColor: '#ff5252',
-              font: {
-                size: 12
-              }
-            }
-          },
-          tp1: {
-            type: 'line',
-            xMin: startX,
-            xMax: startX,
-            yMin: tp1,
-            yMax: tp1,
-            borderColor: '#3fb950',
-            borderWidth: 1,
-            borderDash: [3, 3],
-            label: {
-              content: 'TP1: $' + tp1.toFixed(2),
-              enabled: true,
-              position: 'start',
-              backgroundColor: '#3fb950',
-              font: {
-                size: 12
-              }
-            }
-          },
-          tp2: {
-            type: 'line',
-            xMin: startX,
-            xMax: startX,
-            yMin: tp2,
-            yMax: tp2,
-            borderColor: '#3fb950',
-            borderWidth: 1,
-            borderDash: [3, 3],
-            label: {
-              content: 'TP2: $' + tp2.toFixed(2),
-              enabled: true,
-              position: 'start',
-              backgroundColor: '#3fb950',
-              font: {
-                size: 12
-              }
-            }
-          },
-          tp3: {
-            type: 'line',
-            xMin: startX,
-            xMax: startX,
-            yMin: tp3,
-            yMax: tp3,
-            borderColor: '#3fb950',
-            borderWidth: 1,
-            borderDash: [3, 3],
-            label: {
-              content: 'TP3: $' + tp3.toFixed(2),
-              enabled: true,
-              position: 'start',
-              backgroundColor: '#3fb950',
-              font: {
-                size: 12
-              }
-            }
-          }
-        };
-        
-        if (!chartInstance.options.plugins.annotation.annotations) {
-          chartInstance.options.plugins.annotation.annotations = {};
-        }
-        
-        Object.keys(currentAnnotation).forEach(key => {
-          chartInstance.options.plugins.annotation.annotations[id + '_' + key] = currentAnnotation[key];
-        });
-        
+  function clearDrawings() {
+    if (confirm('Are you sure you want to clear all drawings?')) {
+      savedDrawings = { horizontalLines: [], trendlines: [], positionProjections: [] };
+      if (chartInstance) {
+        chartInstance.options.plugins.annotation.annotations = {};
         chartInstance.update();
       }
     }
+  }
 
-    function handleMouseMove(event) {
-      if (!isDrawing) return;
-      
-      const rect = chartInstance.canvas.getBoundingClientRect();
-      const canvasPosition = Chart.helpers.getRelativePosition(event, chartInstance);
-      const dataX = chartInstance.scales.x.getValueForPixel(canvasPosition.x);
-      const dataY = chartInstance.scales.y.getValueForPixel(canvasPosition.y);
-      
-      if (drawingMode === 'hline') {
-        // Update the horizontal line position
-        if (currentAnnotation) {
-          currentAnnotation.yMin = dataY;
-          currentAnnotation.yMax = dataY;
-          currentAnnotation.label.content = '$' + dataY.toFixed(2);
-          chartInstance.update();
-        }
-      } else if (drawingMode === 'trendline') {
-        // Update the trend line
-        if (currentAnnotation) {
-          currentAnnotation.xMax = dataX;
-          currentAnnotation.yMax = dataY;
-          chartInstance.update();
-        }
-      } else if (drawingMode === 'long' || drawingMode === 'short') {
-        // Update the position projection
-        if (currentAnnotation) {
-          const isLong = drawingMode === 'long';
-          const entryPrice = startY;
-          
-          // Calculate projection levels based on current entry price
-          const stopLoss = isLong ? entryPrice * 0.98 : entryPrice * 1.02; // 2% SL
-          const tp1 = isLong ? entryPrice * 1.02 : entryPrice * 0.98; // 2% TP
-          const tp2 = isLong ? entryPrice * 1.04 : entryPrice * 0.96; // 4% TP
-          const tp3 = isLong ? entryPrice * 1.06 : entryPrice * 0.94; // 6% TP
-          
-          // Update all lines to extend to the current x position
-          Object.keys(currentAnnotation).forEach(key => {
-            currentAnnotation[key].xMax = dataX;
-            
-            // Update labels with correct prices
-            if (key === 'entry') {
-              currentAnnotation[key].label.content = 'Entry: $' + entryPrice.toFixed(2);
-            } else if (key === 'sl') {
-              currentAnnotation[key].label.content = 'SL: $' + stopLoss.toFixed(2);
-            } else if (key === 'tp1') {
-              currentAnnotation[key].label.content = 'TP1: $' + tp1.toFixed(2);
-            } else if (key === 'tp2') {
-              currentAnnotation[key].label.content = 'TP2: $' + tp2.toFixed(2);
-            } else if (key === 'tp3') {
-              currentAnnotation[key].label.content = 'TP3: $' + tp3.toFixed(2);
-            }
-          });
-          
-          chartInstance.update();
-        }
-      }
-    }
+  function handleMouseDown(event) {
+    if (drawingMode === 'cursor') return;
+    const canvasPosition = Chart.helpers.getRelativePosition(event, chartInstance);
+    const dataX = chartInstance.scales.x.getValueForPixel(canvasPosition.x);
+    const dataY = chartInstance.scales.y.getValueForPixel(canvasPosition.y);
+    startX = dataX; startY = dataY; isDrawing = true;
 
-    function handleMouseUp(event) {
-      if (!isDrawing) return;
-      
-      isDrawing = false;
-      
-      const rect = chartInstance.canvas.getBoundingClientRect();
-      const canvasPosition = Chart.helpers.getRelativePosition(event, chartInstance);
-      const dataX = chartInstance.scales.x.getValueForPixel(canvasPosition.x);
-      const dataY = chartInstance.scales.y.getValueForPixel(canvasPosition.y);
-      
-      if (drawingMode === 'hline') {
-        // Save the horizontal line
-        if (currentAnnotation) {
-          const id = 'hline_' + Date.now();
-          savedDrawings.horizontalLines.push({
-            id: id,
-            y: currentAnnotation.yMin,
-            color: '#f0c442'
-          });
-        }
-      } else if (drawingMode === 'trendline') {
-        // Save the trend line
-        if (currentAnnotation) {
-          const id = 'trendline_' + Date.now();
-          savedDrawings.trendlines.push({
-            id: id,
-            xMin: currentAnnotation.xMin,
-            yMin: currentAnnotation.yMin,
-            xMax: currentAnnotation.xMax,
-            yMax: currentAnnotation.yMax,
-            color: '#58a6ff'
-          });
-        }
-      } else if (drawingMode === 'long' || drawingMode === 'short') {
-        // Save the position projection
-        if (currentAnnotation) {
-          const id = 'position_' + drawingMode + '_' + Date.now();
-          const isLong = drawingMode === 'long';
-          const entryPrice = startY;
-          
-          // Calculate projection levels
-          const stopLoss = isLong ? entryPrice * 0.98 : entryPrice * 1.02; // 2% SL
-          const tp1 = isLong ? entryPrice * 1.02 : entryPrice * 0.98; // 2% TP
-          const tp2 = isLong ? entryPrice * 1.04 : entryPrice * 0.96; // 4% TP
-          const tp3 = isLong ? entryPrice * 1.06 : entryPrice * 0.94; // 6% TP
-          
-          savedDrawings.positionProjections.push({
-            id: id,
-            type: drawingMode,
-            entryPrice: entryPrice,
-            stopLoss: stopLoss,
-            tp1: tp1,
-            tp2: tp2,
-            tp3: tp3,
-            xMin: startX,
-            xMax: dataX
-          });
-        }
-      }
-      
-      currentAnnotation = null;
-    }
+    if (drawingMode === 'hline') {
+      const id = 'hline_' + Date.now();
+      currentAnnotation = {
+        type: 'line',
+        xMin: chartInstance.scales.x.min, xMax: chartInstance.scales.x.max,
+        yMin: startY, yMax: startY,
+        borderColor: '#f0c442', borderWidth: 2,
+        label: { content: '$' + startY.toFixed(2), enabled: true, position: 'end', backgroundColor: '#f0c442', font: { size: 12 } }
+      };
+      if (!chartInstance.options.plugins.annotation.annotations) chartInstance.options.plugins.annotation.annotations = {};
+      chartInstance.options.plugins.annotation.annotations[id] = currentAnnotation;
+      chartInstance.update();
+    } else if (drawingMode === 'trendline') {
+      const id = 'trendline_' + Date.now();
+      currentAnnotation = {
+        type: 'line',
+        xMin: startX, yMin: startY, xMax: startX, yMax: startY,
+        borderColor: '#58a6ff', borderWidth: 2,
+        label: { content: 'Trend Line', enabled: true, position: 'center', backgroundColor: '#58a6ff', font: { size: 12 } }
+      };
+      if (!chartInstance.options.plugins.annotation.annotations) chartInstance.options.plugins.annotation.annotations = {};
+      chartInstance.options.plugins.annotation.annotations[id] = currentAnnotation;
+      chartInstance.update();
+    } else if (drawingMode === 'long' || drawingMode === 'short') {
+      const id = 'position_' + drawingMode + '_' + Date.now();
+      const isLong = drawingMode === 'long';
+      const entryPrice = startY;
+      const stopLoss = isLong ? entryPrice * 0.98 : entryPrice * 1.02;
+      const tp1 = isLong ? entryPrice * 1.02 : entryPrice * 0.98;
+      const tp2 = isLong ? entryPrice * 1.04 : entryPrice * 0.96;
+      const tp3 = isLong ? entryPrice * 1.06 : entryPrice * 0.94;
 
-    // Function to restore all saved drawings
-    function restoreDrawings() {
-      if (!chartInstance) return;
-      
-      // Clear existing annotations
-      chartInstance.options.plugins.annotation.annotations = {};
-      
-      // Restore horizontal lines
-      savedDrawings.horizontalLines.forEach(line => {
-        chartInstance.options.plugins.annotation.annotations[line.id] = {
-          type: 'line',
-          xMin: chartInstance.scales.x.min,
-          xMax: chartInstance.scales.x.max,
-          yMin: line.y,
-          yMax: line.y,
-          borderColor: line.color,
-          borderWidth: 2,
-          label: {
-            content: '$' + line.y.toFixed(2),
-            enabled: true,
-            position: 'end',
-            backgroundColor: line.color,
-            font: {
-              size: 12
-            }
-          }
-        };
+      currentAnnotation = {
+        entry: { type: 'line', xMin: startX, xMax: startX, yMin: entryPrice, yMax: entryPrice, borderColor: isLong ? '#3fb950' : '#f85149', borderWidth: 2, borderDash: [5, 5], label: { content: 'Entry: $' + entryPrice.toFixed(2), enabled: true, position: 'start', backgroundColor: isLong ? '#3fb950' : '#f85149', font: { size: 12 } } },
+        sl: { type: 'line', xMin: startX, xMax: startX, yMin: stopLoss, yMax: stopLoss, borderColor: '#ff5252', borderWidth: 2, borderDash: [5, 5], label: { content: 'SL: $' + stopLoss.toFixed(2), enabled: true, position: 'start', backgroundColor: '#ff5252', font: { size: 12 } } },
+        tp1: { type: 'line', xMin: startX, xMax: startX, yMin: tp1, yMax: tp1, borderColor: '#3fb950', borderWidth: 1, borderDash: [3, 3], label: { content: 'TP1: $' + tp1.toFixed(2), enabled: true, position: 'start', backgroundColor: '#3fb950', font: { size: 12 } } },
+        tp2: { type: 'line', xMin: startX, xMax: startX, yMin: tp2, yMax: tp2, borderColor: '#3fb950', borderWidth: 1, borderDash: [3, 3], label: { content: 'TP2: $' + tp2.toFixed(2), enabled: true, position: 'start', backgroundColor: '#3fb950', font: { size: 12 } } },
+        tp3: { type: 'line', xMin: startX, xMax: startX, yMin: tp3, yMax: tp3, borderColor: '#3fb950', borderWidth: 1, borderDash: [3, 3], label: { content: 'TP3: $' + tp3.toFixed(2), enabled: true, position: 'start', backgroundColor: '#3fb950', font: { size: 12 } } }
+      };
+
+      if (!chartInstance.options.plugins.annotation.annotations) chartInstance.options.plugins.annotation.annotations = {};
+      Object.keys(currentAnnotation).forEach(key => {
+        chartInstance.options.plugins.annotation.annotations[id + '_' + key] = currentAnnotation[key];
       });
-      
-      // Restore trend lines
-      savedDrawings.trendlines.forEach(line => {
-        chartInstance.options.plugins.annotation.annotations[line.id] = {
-          type: 'line',
-          xMin: line.xMin,
-          yMin: line.yMin,
-          xMax: line.xMax,
-          yMax: line.yMax,
-          borderColor: line.color,
-          borderWidth: 2,
-          label: {
-            content: 'Trend Line',
-            enabled: true,
-            position: 'center',
-            backgroundColor: line.color,
-            font: {
-              size: 12
-            }
-          }
-        };
-      });
-      
-      // Restore position projections
-      savedDrawings.positionProjections.forEach(projection => {
-        const isLong = projection.type === 'long';
-        
-        chartInstance.options.plugins.annotation.annotations[projection.id + '_entry'] = {
-          type: 'line',
-          xMin: projection.xMin,
-          xMax: projection.xMax,
-          yMin: projection.entryPrice,
-          yMax: projection.entryPrice,
-          borderColor: isLong ? '#3fb950' : '#f85149',
-          borderWidth: 2,
-          borderDash: [5, 5],
-          label: {
-            content: 'Entry: $' + projection.entryPrice.toFixed(2),
-            enabled: true,
-            position: 'start',
-            backgroundColor: isLong ? '#3fb950' : '#f85149',
-            font: {
-              size: 12
-            }
-          }
-        };
-        
-        chartInstance.options.plugins.annotation.annotations[projection.id + '_sl'] = {
-          type: 'line',
-          xMin: projection.xMin,
-          xMax: projection.xMax,
-          yMin: projection.stopLoss,
-          yMax: projection.stopLoss,
-          borderColor: '#ff5252',
-          borderWidth: 2,
-          borderDash: [5, 5],
-          label: {
-            content: 'SL: $' + projection.stopLoss.toFixed(2),
-            enabled: true,
-            position: 'start',
-            backgroundColor: '#ff5252',
-            font: {
-              size: 12
-            }
-          }
-        };
-        
-        chartInstance.options.plugins.annotation.annotations[projection.id + '_tp1'] = {
-          type: 'line',
-          xMin: projection.xMin,
-          xMax: projection.xMax,
-          yMin: projection.tp1,
-          yMax: projection.tp1,
-          borderColor: '#3fb950',
-          borderWidth: 1,
-          borderDash: [3, 3],
-          label: {
-            content: 'TP1: $' + projection.tp1.toFixed(2),
-            enabled: true,
-            position: 'start',
-            backgroundColor: '#3fb950',
-            font: {
-              size: 12
-            }
-          }
-        };
-        
-        chartInstance.options.plugins.annotation.annotations[projection.id + '_tp2'] = {
-          type: 'line',
-          xMin: projection.xMin,
-          xMax: projection.xMax,
-          yMin: projection.tp2,
-          yMax: projection.tp2,
-          borderColor: '#3fb950',
-          borderWidth: 1,
-          borderDash: [3, 3],
-          label: {
-            content: 'TP2: $' + projection.tp2.toFixed(2),
-            enabled: true,
-            position: 'start',
-            backgroundColor: '#3fb950',
-            font: {
-              size: 12
-            }
-          }
-        };
-        
-        chartInstance.options.plugins.annotation.annotations[projection.id + '_tp3'] = {
-          type: 'line',
-          xMin: projection.xMin,
-          xMax: projection.xMax,
-          yMin: projection.tp3,
-          yMax: projection.tp3,
-          borderColor: '#3fb950',
-          borderWidth: 1,
-          borderDash: [3, 3],
-          label: {
-            content: 'TP3: $' + projection.tp3.toFixed(2),
-            enabled: true,
-            position: 'start',
-            backgroundColor: '#3fb950',
-            font: {
-              size: 12
-            }
-          }
-        };
-      });
-      
       chartInstance.update();
     }
+  }
 
-    async function refreshChart() {
-      try {
-        const response = await fetch('/chart-data');
-        if (!response.ok) throw new Error('Failed to fetch chart data');
-        
-        const data = await response.json();
-        
-        if (data.candles && data.candles.length > 0) {
-          updateChartDisplay(data);
-          document.getElementById('chart-time').textContent = new Date().toLocaleTimeString();
-        }
-      } catch (e) {
-        console.error('Error refreshing chart:', e);
-        document.getElementById('chart-time').textContent = 'Error';
+  function handleMouseMove(event) {
+    if (!isDrawing) return;
+    const canvasPosition = Chart.helpers.getRelativePosition(event, chartInstance);
+    const dataX = chartInstance.scales.x.getValueForPixel(canvasPosition.x);
+    const dataY = chartInstance.scales.y.getValueForPixel(canvasPosition.y);
+
+    if (drawingMode === 'hline' && currentAnnotation) {
+      currentAnnotation.yMin = dataY; currentAnnotation.yMax = dataY;
+      currentAnnotation.label.content = '$' + dataY.toFixed(2);
+      chartInstance.update();
+    } else if (drawingMode === 'trendline' && currentAnnotation) {
+      currentAnnotation.xMax = dataX; currentAnnotation.yMax = dataY;
+      chartInstance.update();
+    } else if ((drawingMode === 'long' || drawingMode === 'short') && currentAnnotation) {
+      const isLong = drawingMode === 'long';
+      const entryPrice = startY;
+      const stopLoss = isLong ? entryPrice * 0.98 : entryPrice * 1.02;
+      const tp1 = isLong ? entryPrice * 1.02 : entryPrice * 0.98;
+      const tp2 = isLong ? entryPrice * 1.04 : entryPrice * 0.96;
+      const tp3 = isLong ? entryPrice * 1.06 : entryPrice * 0.94;
+
+      Object.keys(currentAnnotation).forEach(key => {
+        currentAnnotation[key].xMax = dataX;
+        if (key === 'entry') currentAnnotation[key].label.content = 'Entry: $' + entryPrice.toFixed(2);
+        else if (key === 'sl') currentAnnotation[key].label.content = 'SL: $' + stopLoss.toFixed(2);
+        else if (key === 'tp1') currentAnnotation[key].label.content = 'TP1: $' + tp1.toFixed(2);
+        else if (key === 'tp2') currentAnnotation[key].label.content = 'TP2: $' + tp2.toFixed(2);
+        else if (key === 'tp3') currentAnnotation[key].label.content = 'TP3: $' + tp3.toFixed(2);
+      });
+      chartInstance.update();
+    }
+  }
+
+  function handleMouseUp(event) {
+    if (!isDrawing) return;
+    isDrawing = false;
+
+    const canvasPosition = Chart.helpers.getRelativePosition(event, chartInstance);
+    const dataX = chartInstance.scales.x.getValueForPixel(canvasPosition.x);
+
+    if (drawingMode === 'hline' && currentAnnotation) {
+      savedDrawings.horizontalLines.push({ id: 'hline_' + Date.now(), y: currentAnnotation.yMin, color: '#f0c442' });
+    } else if (drawingMode === 'trendline' && currentAnnotation) {
+      savedDrawings.trendlines.push({ id: 'trendline_' + Date.now(), xMin: currentAnnotation.xMin, yMin: currentAnnotation.yMin, xMax: currentAnnotation.xMax, yMax: currentAnnotation.yMax, color: '#58a6ff' });
+    } else if ((drawingMode === 'long' || drawingMode === 'short') && currentAnnotation) {
+      const isLong = drawingMode === 'long';
+      const entryPrice = startY;
+      savedDrawings.positionProjections.push({
+        id: 'position_' + drawingMode + '_' + Date.now(), type: drawingMode,
+        entryPrice, stopLoss: isLong ? entryPrice * 0.98 : entryPrice * 1.02,
+        tp1: isLong ? entryPrice * 1.02 : entryPrice * 0.98,
+        tp2: isLong ? entryPrice * 1.04 : entryPrice * 0.96,
+        tp3: isLong ? entryPrice * 1.06 : entryPrice * 0.94,
+        xMin: startX, xMax: dataX
+      });
+    }
+    currentAnnotation = null;
+  }
+
+  function restoreDrawings() {
+    if (!chartInstance) return;
+    chartInstance.options.plugins.annotation.annotations = {};
+
+    savedDrawings.horizontalLines.forEach(line => {
+      chartInstance.options.plugins.annotation.annotations[line.id] = {
+        type: 'line', xMin: chartInstance.scales.x.min, xMax: chartInstance.scales.x.max,
+        yMin: line.y, yMax: line.y, borderColor: line.color, borderWidth: 2,
+        label: { content: '$' + line.y.toFixed(2), enabled: true, position: 'end', backgroundColor: line.color, font: { size: 12 } }
+      };
+    });
+
+    savedDrawings.trendlines.forEach(line => {
+      chartInstance.options.plugins.annotation.annotations[line.id] = {
+        type: 'line', xMin: line.xMin, yMin: line.yMin, xMax: line.xMax, yMax: line.yMax,
+        borderColor: line.color, borderWidth: 2,
+        label: { content: 'Trend Line', enabled: true, position: 'center', backgroundColor: line.color, font: { size: 12 } }
+      };
+    });
+
+    savedDrawings.positionProjections.forEach(proj => {
+      const isLong = proj.type === 'long';
+      const makeLabel = (text, color) => ({ content: text, enabled: true, position: 'start', backgroundColor: color, font: { size: 12 } });
+      chartInstance.options.plugins.annotation.annotations[proj.id + '_entry'] = { type: 'line', xMin: proj.xMin, xMax: proj.xMax, yMin: proj.entryPrice, yMax: proj.entryPrice, borderColor: isLong ? '#3fb950' : '#f85149', borderWidth: 2, borderDash: [5, 5], label: makeLabel('Entry: $' + proj.entryPrice.toFixed(2), isLong ? '#3fb950' : '#f85149') };
+      chartInstance.options.plugins.annotation.annotations[proj.id + '_sl'] = { type: 'line', xMin: proj.xMin, xMax: proj.xMax, yMin: proj.stopLoss, yMax: proj.stopLoss, borderColor: '#ff5252', borderWidth: 2, borderDash: [5, 5], label: makeLabel('SL: $' + proj.stopLoss.toFixed(2), '#ff5252') };
+      chartInstance.options.plugins.annotation.annotations[proj.id + '_tp1'] = { type: 'line', xMin: proj.xMin, xMax: proj.xMax, yMin: proj.tp1, yMax: proj.tp1, borderColor: '#3fb950', borderWidth: 1, borderDash: [3, 3], label: makeLabel('TP1: $' + proj.tp1.toFixed(2), '#3fb950') };
+      chartInstance.options.plugins.annotation.annotations[proj.id + '_tp2'] = { type: 'line', xMin: proj.xMin, xMax: proj.xMax, yMin: proj.tp2, yMax: proj.tp2, borderColor: '#3fb950', borderWidth: 1, borderDash: [3, 3], label: makeLabel('TP2: $' + proj.tp2.toFixed(2), '#3fb950') };
+      chartInstance.options.plugins.annotation.annotations[proj.id + '_tp3'] = { type: 'line', xMin: proj.xMin, xMax: proj.xMax, yMin: proj.tp3, yMax: proj.tp3, borderColor: '#3fb950', borderWidth: 1, borderDash: [3, 3], label: makeLabel('TP3: $' + proj.tp3.toFixed(2), '#3fb950') };
+    });
+
+    chartInstance.update();
+  }
+
+  // ══════════════════════════════════════════════
+  // Chart
+  // ══════════════════════════════════════════════
+  async function refreshChart() {
+    try {
+      const response = await fetch('/chart-data');
+      if (!response.ok) throw new Error('Failed to fetch chart data');
+      const data = await response.json();
+      if (data.candles && data.candles.length > 0) {
+        updateChartDisplay(data);
+        document.getElementById('chart-time').textContent = new Date().toLocaleTimeString();
       }
+    } catch (e) {
+      console.error('Error refreshing chart:', e);
+      document.getElementById('chart-time').textContent = 'Error';
+    }
+  }
+
+  function updateChartDisplay(data) {
+    const ctx = document.getElementById('priceChart').getContext('2d');
+    const candleData = data.candles.slice(-100);
+    const stopData = data.stop_line.slice(-100);
+
+    const candlesticks = candleData.map(c => ({ x: c.time * 1000, o: c.open, h: c.high, l: c.low, c: c.close }));
+    const stopLineData = stopData.map(s => ({ x: s.time * 1000, y: s.value }));
+    const buySignals = [], sellSignals = [];
+
+    if (data.signals && data.signals.length > 0) {
+      data.signals.forEach(signal => {
+        if (signal.type === 'buy') buySignals.push({ x: signal.time * 1000, y: signal.price });
+        else if (signal.type === 'sell') sellSignals.push({ x: signal.time * 1000, y: signal.price });
+      });
     }
 
-    function updateChartDisplay(data) {
-      const ctx = document.getElementById('priceChart').getContext('2d');
-      
-      // Get the last 100 candles for better visibility
-      const candleData = data.candles.slice(-100);
-      const stopData = data.stop_line.slice(-100);
-      
-      // Prepare candlestick data
-      const candlesticks = candleData.map(c => ({
-        x: c.time * 1000, // Convert to milliseconds
-        o: c.open,
-        h: c.high,
-        l: c.low,
-        c: c.close
-      }));
-      
-      // Prepare stop line data
-      const stopLineData = stopData.map(s => ({
-        x: s.time * 1000,
-        y: s.value
-      }));
-      
-      // Prepare buy and sell signals data
-      const buySignals = [];
-      const sellSignals = [];
-      
-      if (data.signals && data.signals.length > 0) {
-        data.signals.forEach(signal => {
-          if (signal.type === 'buy') {
-            buySignals.push({
-              x: signal.time * 1000,
-              y: signal.price
-            });
-          } else if (signal.type === 'sell') {
-            sellSignals.push({
-              x: signal.time * 1000,
-              y: signal.price
-            });
-          }
-        });
-      }
-      
-      // Save the current chart instance if it exists
-      const existingChart = chartInstance;
-      
-      if (existingChart) {
-        // Remove event listeners from the old canvas
-        existingChart.canvas.removeEventListener('mousedown', handleMouseDown);
-        existingChart.canvas.removeEventListener('mousemove', handleMouseMove);
-        existingChart.canvas.removeEventListener('mouseup', handleMouseUp);
-        existingChart.canvas.removeEventListener('mouseleave', handleMouseUp);
-        
-        // Destroy the old chart
-        existingChart.destroy();
-      }
+    const existingChart = chartInstance;
+    if (existingChart) {
+      existingChart.canvas.removeEventListener('mousedown', handleMouseDown);
+      existingChart.canvas.removeEventListener('mousemove', handleMouseMove);
+      existingChart.canvas.removeEventListener('mouseup', handleMouseUp);
+      existingChart.canvas.removeEventListener('mouseleave', handleMouseUp);
+      existingChart.destroy();
+    }
 
-      // Updated for Chart.js v4
-      chartInstance = new Chart(ctx, {
-        type: 'candlestick',
-        data: {
-          datasets: [
-            {
-              label: 'BTC/USDT',
-              data: candlesticks,
-              type: 'candlestick',
-              borderColor: {
-                up: '#3fb950',
-                down: '#f85149',
-                unchanged: '#8b949e'
-              },
-              backgroundColor: {
-                up: 'rgba(63, 185, 80, 0.1)',
-                down: 'rgba(248, 81, 73, 0.1)',
-                unchanged: 'rgba(139, 148, 158, 0.1)'
-              },
-              borderWidth: 1,
-              barThickness: 'flex',
-              maxBarThickness: 10
-            },
-            {
-              label: 'UT Bot Stop',
-              data: stopLineData,
-              type: 'line',
-              borderColor: '#f0c442',
-              backgroundColor: 'transparent',
-              borderWidth: 2,
-              borderDash: [5, 5],
-              pointRadius: 0,
-              tension: 0
-            },
-            {
-              label: 'Buy Signals',
-              data: buySignals,
-              type: 'scatter',
-              backgroundColor: '#3fb950',
-              borderColor: '#3fb950',
-              pointStyle: 'triangle',
-              rotation: 180,
-              radius: 8,
-              pointHoverRadius: 10
-            },
-            {
-              label: 'Sell Signals',
-              data: sellSignals,
-              type: 'scatter',
-              backgroundColor: '#f85149',
-              borderColor: '#f85149',
-              pointStyle: 'triangle',
-              radius: 8,
-              pointHoverRadius: 10
-            }
-          ]
+    chartInstance = new Chart(ctx, {
+      type: 'candlestick',
+      data: {
+        datasets: [
+          {
+            label: 'BTC/USDT', data: candlesticks, type: 'candlestick',
+            borderColor: { up: '#3fb950', down: '#f85149', unchanged: '#8b949e' },
+            backgroundColor: { up: 'rgba(63, 185, 80, 0.1)', down: 'rgba(248, 81, 73, 0.1)', unchanged: 'rgba(139, 148, 158, 0.1)' },
+            borderWidth: 1, barThickness: 'flex', maxBarThickness: 10
+          },
+          {
+            label: 'UT Bot Stop', data: stopLineData, type: 'line',
+            borderColor: '#f0c442', backgroundColor: 'transparent',
+            borderWidth: 2, borderDash: [5, 5], pointRadius: 0, tension: 0
+          },
+          {
+            label: 'Buy Signals', data: buySignals, type: 'scatter',
+            backgroundColor: '#3fb950', borderColor: '#3fb950',
+            pointStyle: 'triangle', rotation: 180, radius: 8, pointHoverRadius: 10
+          },
+          {
+            label: 'Sell Signals', data: sellSignals, type: 'scatter',
+            backgroundColor: '#f85149', borderColor: '#f85149',
+            pointStyle: 'triangle', radius: 8, pointHoverRadius: 10
+          }
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        scales: {
+          x: {
+            type: 'time',
+            time: { unit: 'minute', displayFormats: { minute: 'HH:mm' } },
+            ticks: { color: '#8b949e', font: { size: 10 }, maxTicksLimit: 8 },
+            grid: { color: '#30363d', display: true }
+          },
+          y: {
+            ticks: { color: '#8b949e', font: { size: 10 }, callback: v => '$' + v.toFixed(0) },
+            grid: { color: '#30363d' }
+          }
         },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          scales: {
-            x: {
-              type: 'time',
-              time: {
-                unit: 'minute',
-                displayFormats: {
-                  minute: 'HH:mm'
+        plugins: {
+          legend: { display: true, position: 'top', labels: { color: '#c9d1d9', font: { size: 11 }, usePointStyle: true, padding: 20 } },
+          tooltip: {
+            mode: 'index', intersect: false,
+            backgroundColor: 'rgba(22, 27, 34, 0.95)',
+            titleColor: '#c9d1d9', bodyColor: '#8b949e',
+            borderColor: '#30363d', borderWidth: 1, padding: 12, displayColors: true,
+            callbacks: {
+              label: function(context) {
+                if (context.dataset.type === 'candlestick') {
+                  const candle = context.raw;
+                  return [`Open: $${candle.o.toFixed(2)}`, `High: $${candle.h.toFixed(2)}`, `Low: $${candle.l.toFixed(2)}`, `Close: $${candle.c.toFixed(2)}`];
+                } else if (context.dataset.type === 'line') {
+                  return `Stop: $${context.parsed.y.toFixed(2)}`;
+                } else if (context.dataset.label === 'Buy Signals') {
+                  return `Buy Signal: $${context.parsed.y.toFixed(2)}`;
+                } else if (context.dataset.label === 'Sell Signals') {
+                  return `Sell Signal: $${context.parsed.y.toFixed(2)}`;
                 }
-              },
-              ticks: {
-                color: '#8b949e',
-                font: { size: 10 },
-                maxTicksLimit: 8
-              },
-              grid: {
-                color: '#30363d',
-                display: true
-              }
-            },
-            y: {
-              ticks: {
-                color: '#8b949e',
-                font: { size: 10 },
-                callback: function(value) {
-                  return '$' + value.toFixed(0);
-                }
-              },
-              grid: {
-                color: '#30363d'
+                return '';
               }
             }
           },
-          plugins: {
-            legend: {
-              display: true,
-              position: 'top',
-              labels: {
-                color: '#c9d1d9',
-                font: { size: 11 },
-                usePointStyle: true,
-                padding: 20
-              }
-            },
-            tooltip: {
-              mode: 'index',
-              intersect: false,
-              backgroundColor: 'rgba(22, 27, 34, 0.95)',
-              titleColor: '#c9d1d9',
-              bodyColor: '#8b949e',
-              borderColor: '#30363d',
-              borderWidth: 1,
-              padding: 12,
-              displayColors: true,
-              callbacks: {
-                label: function(context) {
-                  if (context.dataset.type === 'candlestick') {
-                    const candle = context.raw;
-                    return [
-                      `Open: $${candle.o.toFixed(2)}`,
-                      `High: $${candle.h.toFixed(2)}`,
-                      `Low: $${candle.l.toFixed(2)}`,
-                      `Close: $${candle.c.toFixed(2)}`
-                    ];
-                  } else if (context.dataset.type === 'line') {
-                    return `Stop: $${context.parsed.y.toFixed(2)}`;
-                  } else if (context.dataset.label === 'Buy Signals') {
-                    return `Buy Signal: $${context.parsed.y.toFixed(2)}`;
-                  } else if (context.dataset.label === 'Sell Signals') {
-                    return `Sell Signal: $${context.parsed.y.toFixed(2)}`;
-                  }
-                  return '';
-                }
-              }
-            },
-            annotation: {
-              annotations: {}
-            }
-          }
+          annotation: { annotations: {} }
         }
-      });
-      
-      // Add event listeners for drawing
-      chartInstance.canvas.addEventListener('mousedown', handleMouseDown);
-      chartInstance.canvas.addEventListener('mousemove', handleMouseMove);
-      chartInstance.canvas.addEventListener('mouseup', handleMouseUp);
-      chartInstance.canvas.addEventListener('mouseleave', handleMouseUp);
-      
-      // Restore any saved drawings
-      restoreDrawings();
-      
-      // Set default drawing mode
-      setDrawingMode('cursor');
-    }
-
-    async function fetchAndUpdate() {
-      try {
-        const res = await fetch('/signal');
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        
-        const data = await res.json();
-
-        document.getElementById('price').textContent = '$' + data.price.toFixed(2);
-
-        const signalDiv = document.getElementById('signal');
-        signalDiv.textContent = data.signal;
-        signalDiv.className = 'signal ' + data.signal.toLowerCase();
-
-        // Show pause reason if trading is paused
-        let actionText = data.action;
-        if (!data.trading_allowed && data.pause_reason) {
-          actionText = `⏸️ ${data.pause_reason}`;
-        }
-        
-        document.getElementById('action-msg').textContent = actionText;
-        document.getElementById('balance').textContent = '₹' + data.balance.toLocaleString('en-IN', {maximumFractionDigits: 2});
-        document.getElementById('position').textContent = data.position_type ? data.position_type : 'NONE';
-        document.getElementById('position-size').textContent = data.position_size ? data.position_size.toFixed(6) + ' BTC' : '0 BTC';
-
-        // Update Entry Price
-        const entryPriceSpan = document.getElementById('entry-price');
-        if (data.holding && data.entry_price) {
-          entryPriceSpan.textContent = '$' + data.entry_price.toFixed(2);
-        } else {
-          entryPriceSpan.textContent = 'N/A';
-        }
-
-        // Update Live P/L
-        const livePlSpan = document.getElementById('live-pl');
-        if (data.live_pl_inr !== null && data.live_pl_inr !== undefined) {
-          livePlSpan.textContent = '₹' + data.live_pl_inr.toLocaleString('en-IN', {maximumFractionDigits: 2});
-          livePlSpan.className = data.live_pl_inr >= 0 ? 'profit' : 'loss';
-        } else {
-          livePlSpan.textContent = 'N/A';
-          livePlSpan.className = '';
-        }
-
-        // Update Stop-Loss (in info grid)
-        const slDisplaySpan = document.getElementById('stop-loss-display');
-        if (data.stop_loss) {
-          slDisplaySpan.textContent = '$' + data.stop_loss.toFixed(2);
-          slDisplaySpan.className = data.live_pl_inr >= 0 ? 'profit' : 'loss';
-        } else {
-          slDisplaySpan.textContent = 'N/A';
-          slDisplaySpan.className = '';
-        }
-
-        // Update Stop-Loss (in risk panel)
-        const slSpan = document.getElementById('stop-loss');
-        if (data.stop_loss) {
-          slSpan.textContent = '$' + data.stop_loss.toFixed(2);
-          slSpan.className = 'risk-value';
-        } else {
-          slSpan.textContent = 'N/A';
-        }
-
-        // Update Take-Profit Levels
-        const tpContainer = document.getElementById('tp-levels-container');
-        if (data.tp_levels && data.tp_levels.length > 0) {
-          tpContainer.innerHTML = '<div style="font-size: 0.8rem; margin-bottom: 5px; color: var(--text-secondary);">Take-Profit Levels:</div>';
-          data.tp_levels.forEach(tp => {
-            const tpDiv = document.createElement('div');
-            tpDiv.className = tp.hit ? 'tp-level hit' : 'tp-level pending';
-            tpDiv.innerHTML = `
-              <span>${tp.name}: $${tp.price.toFixed(2)}</span>
-              <span>${tp.hit ? '✅ Hit' : tp.percentage + '%'}</span>
-            `;
-            tpContainer.appendChild(tpDiv);
-          });
-        } else {
-          tpContainer.innerHTML = '';
-        }
-
-        // Update ATR
-        document.getElementById('atr-value').textContent = data.atr ? '$' + data.atr.toFixed(2) : '--';
-
-        // Update Risk Status
-        if (data.risk_status) {
-          const dailyStats = data.risk_status.daily_stats;
-          const limitsUsage = data.risk_status.limits_usage;
-
-          document.getElementById('trades-count').textContent = dailyStats.trades;
-          document.getElementById('loss-count').textContent = dailyStats.loss;
-          document.getElementById('consec-losses').textContent = dailyStats.consecutive_losses;
-
-          // Update progress bars
-          updateProgressBar('trades-progress', limitsUsage.trades_pct);
-          updateProgressBar('loss-progress', limitsUsage.loss_pct);
-          updateProgressBar('consec-progress', (parseInt(dailyStats.consecutive_losses.split('/')[0]) / parseInt(dailyStats.consecutive_losses.split('/')[1])) * 100);
-        }
-
-        // Update order log
-        if (data.latest_order) {
-          const orderList = document.getElementById('order-list');
-          if (orderList.children.length === 1 && orderList.children[0].textContent.includes("Fetching")) {
-            orderList.innerHTML = '';
-          }
-          
-          const li = document.createElement('li');
-          li.className = 'order-' + data.latest_order.side.toLowerCase();
-          
-          // Create a more prominent price display
-          const priceDisplay = document.createElement('div');
-          priceDisplay.className = 'order-price';
-          priceDisplay.textContent = `@ $${data.latest_order.price.toFixed(2)}`;
-          
-          li.innerHTML = `
-            <div>
-              <strong>${data.latest_order.side}</strong> ${data.latest_order.quantity} BTC
-            </div>
-            <div class="order-time">${data.latest_order.time}</div>
-          `;
-          
-          // Add the price display as a separate element
-          li.appendChild(priceDisplay);
-          
-          orderList.prepend(li);
-          
-          // Keep only last 10 orders
-          while (orderList.children.length > 10) {
-            orderList.removeChild(orderList.lastChild);
-          }
-        }
-
-      } catch (e) {
-        console.error("Error fetching data:", e);
       }
-    }
-
-    function updateProgressBar(id, percentage) {
-      const bar = document.getElementById(id);
-      if (!bar) return;
-      
-      bar.style.width = Math.min(percentage, 100) + '%';
-      
-      bar.className = 'progress-fill';
-      if (percentage >= 80) {
-        bar.classList.add('danger');
-      } else if (percentage >= 60) {
-        bar.classList.add('warning');
-      }
-    }
-
-    async function fetchHistory() {
-      try {
-        const res = await fetch('/history');
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        
-        const history = await res.json();
-        const historyBody = document.getElementById('history-body');
-        
-        if (history.length === 0) {
-          historyBody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-secondary);">No trades yet</td></tr>';
-          return;
-        }
-
-        historyBody.innerHTML = '';
-        history.slice(-20).reverse().forEach(trade => {
-          const row = historyBody.insertRow();
-          row.insertCell(0).textContent = trade.type + (trade.partial ? ' (Partial)' : '');
-          row.insertCell(1).textContent = '$' + trade.entry_price.toFixed(2);
-          row.insertCell(2).textContent = '$' + trade.exit_price.toFixed(2);
-          
-          const plCell = row.insertCell(3);
-          plCell.textContent = '₹' + trade.profit_inr.toLocaleString('en-IN', {maximumFractionDigits: 2});
-          plCell.className = trade.profit_inr >= 0 ? 'profit' : 'loss';
-          
-          row.insertCell(4).textContent = trade.exit_reason || 'Signal';
-        });
-
-        updatePerformance(history);
-
-      } catch (e) {
-        console.error("Error fetching history:", e);
-      }
-    }
-
-    function updatePerformance(history) {
-      if (history.length === 0) return;
-
-      const wins = history.filter(t => t.profit_inr > 0).length;
-      const losses = history.filter(t => t.profit_inr < 0).length;
-      const winRate = ((wins / history.length) * 100).toFixed(2);
-      const totalPL = history.reduce((sum, t) => sum + t.profit_inr, 0);
-
-      document.getElementById('total-trades').textContent = history.length;
-      document.getElementById('win-loss').textContent = `${wins}/${losses}`;
-      document.getElementById('win-rate').textContent = `${winRate}%`;
-      
-      const plSpan = document.getElementById('total-pl');
-      plSpan.textContent = '₹' + totalPL.toLocaleString('en-IN', {maximumFractionDigits: 2});
-      plSpan.className = totalPL >= 0 ? 'profit' : 'loss';
-    }
-
-    document.addEventListener('DOMContentLoaded', () => {
-      updateTradingStatusUI();
-      refreshChart();
-      fetchAndUpdate();
-      fetchHistory();
-      
-      setInterval(fetchAndUpdate, 5000);
-      setInterval(fetchHistory, 10000);
-      setInterval(refreshChart, 30000);
-      setInterval(updateTradingStatusUI, 10000); // Update trading status every 10 seconds
     });
-  </script>
+
+    chartInstance.canvas.addEventListener('mousedown', handleMouseDown);
+    chartInstance.canvas.addEventListener('mousemove', handleMouseMove);
+    chartInstance.canvas.addEventListener('mouseup', handleMouseUp);
+    chartInstance.canvas.addEventListener('mouseleave', handleMouseUp);
+    restoreDrawings();
+    setDrawingMode('cursor');
+  }
+
+  // ══════════════════════════════════════════════
+  // Data Fetching — with manual price override injected
+  // ══════════════════════════════════════════════
+  async function fetchAndUpdate() {
+    try {
+      const res = await fetch('/signal');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+
+      // ✅ Apply manual price override if set
+      const displayPrice = manualPriceOverride !== null ? manualPriceOverride : data.price;
+
+      const priceEl = document.getElementById('price');
+      if (manualPriceOverride !== null) {
+        priceEl.innerHTML = `$${displayPrice.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})} <span class="override-badge">MANUAL</span>`;
+      } else {
+        priceEl.textContent = '$' + data.price.toFixed(2);
+      }
+
+      const signalDiv = document.getElementById('signal');
+      signalDiv.textContent = data.signal;
+      signalDiv.className = 'signal ' + data.signal.toLowerCase();
+
+      let actionText = data.action;
+      if (!data.trading_allowed && data.pause_reason) {
+        actionText = `⏸️ ${data.pause_reason}`;
+      }
+      document.getElementById('action-msg').textContent = actionText;
+      document.getElementById('balance').textContent = '₹' + data.balance.toLocaleString('en-IN', {maximumFractionDigits: 2});
+      document.getElementById('position').textContent = data.position_type ? data.position_type : 'NONE';
+
+      // ✅ Show manual lot override in position size if set
+      if (manualLotOverride !== null) {
+        document.getElementById('position-size').innerHTML = `${manualLotOverride.toFixed(6)} BTC <span class="override-badge">MANUAL</span>`;
+      } else {
+        document.getElementById('position-size').textContent = data.position_size ? data.position_size.toFixed(6) + ' BTC' : '0 BTC';
+      }
+
+      const entryPriceSpan = document.getElementById('entry-price');
+      entryPriceSpan.textContent = (data.holding && data.entry_price) ? '$' + data.entry_price.toFixed(2) : 'N/A';
+
+      const livePlSpan = document.getElementById('live-pl');
+      if (data.live_pl_inr !== null && data.live_pl_inr !== undefined) {
+        livePlSpan.textContent = '₹' + data.live_pl_inr.toLocaleString('en-IN', {maximumFractionDigits: 2});
+        livePlSpan.className = data.live_pl_inr >= 0 ? 'profit' : 'loss';
+      } else {
+        livePlSpan.textContent = 'N/A';
+        livePlSpan.className = '';
+      }
+
+      const slDisplaySpan = document.getElementById('stop-loss-display');
+      if (data.stop_loss) {
+        slDisplaySpan.textContent = '$' + data.stop_loss.toFixed(2);
+        slDisplaySpan.className = data.live_pl_inr >= 0 ? 'profit' : 'loss';
+      } else {
+        slDisplaySpan.textContent = 'N/A';
+        slDisplaySpan.className = '';
+      }
+
+      const slSpan = document.getElementById('stop-loss');
+      if (data.stop_loss) {
+        slSpan.textContent = '$' + data.stop_loss.toFixed(2);
+        slSpan.className = 'risk-value';
+      } else {
+        slSpan.textContent = 'N/A';
+      }
+
+      const tpContainer = document.getElementById('tp-levels-container');
+      if (data.tp_levels && data.tp_levels.length > 0) {
+        tpContainer.innerHTML = '<div style="font-size: 0.8rem; margin-bottom: 5px; color: var(--text-secondary);">Take-Profit Levels:</div>';
+        data.tp_levels.forEach(tp => {
+          const tpDiv = document.createElement('div');
+          tpDiv.className = tp.hit ? 'tp-level hit' : 'tp-level pending';
+          tpDiv.innerHTML = `<span>${tp.name}: $${tp.price.toFixed(2)}</span><span>${tp.hit ? '✅ Hit' : tp.percentage + '%'}</span>`;
+          tpContainer.appendChild(tpDiv);
+        });
+      } else {
+        tpContainer.innerHTML = '';
+      }
+
+      document.getElementById('atr-value').textContent = data.atr ? '$' + data.atr.toFixed(2) : '--';
+
+      if (data.risk_status) {
+        const dailyStats = data.risk_status.daily_stats;
+        const limitsUsage = data.risk_status.limits_usage;
+        document.getElementById('trades-count').textContent = dailyStats.trades;
+        document.getElementById('loss-count').textContent = dailyStats.loss;
+        document.getElementById('consec-losses').textContent = dailyStats.consecutive_losses;
+        updateProgressBar('trades-progress', limitsUsage.trades_pct);
+        updateProgressBar('loss-progress', limitsUsage.loss_pct);
+        updateProgressBar('consec-progress', (parseInt(dailyStats.consecutive_losses.split('/')[0]) / parseInt(dailyStats.consecutive_losses.split('/')[1])) * 100);
+      }
+
+      if (data.latest_order) {
+        const orderList = document.getElementById('order-list');
+        if (orderList.children.length === 1 && orderList.children[0].textContent.includes("Fetching")) {
+          orderList.innerHTML = '';
+        }
+        const li = document.createElement('li');
+        li.className = 'order-' + data.latest_order.side.toLowerCase();
+        const priceDisplay = document.createElement('div');
+        priceDisplay.className = 'order-price';
+        priceDisplay.textContent = `@ $${data.latest_order.price.toFixed(2)}`;
+        li.innerHTML = `<div><strong>${data.latest_order.side}</strong> ${data.latest_order.quantity} BTC</div><div class="order-time">${data.latest_order.time}</div>`;
+        li.appendChild(priceDisplay);
+        orderList.prepend(li);
+        while (orderList.children.length > 10) orderList.removeChild(orderList.lastChild);
+      }
+
+    } catch (e) {
+      console.error("Error fetching data:", e);
+    }
+  }
+
+  function updateProgressBar(id, percentage) {
+    const bar = document.getElementById(id);
+    if (!bar) return;
+    bar.style.width = Math.min(percentage, 100) + '%';
+    bar.className = 'progress-fill';
+    if (percentage >= 80) bar.classList.add('danger');
+    else if (percentage >= 60) bar.classList.add('warning');
+  }
+
+  async function fetchHistory() {
+    try {
+      const res = await fetch('/history');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const history = await res.json();
+      const historyBody = document.getElementById('history-body');
+
+      if (history.length === 0) {
+        historyBody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-secondary);">No trades yet</td></tr>';
+        return;
+      }
+
+      historyBody.innerHTML = '';
+      history.slice(-20).reverse().forEach(trade => {
+        const row = historyBody.insertRow();
+        row.insertCell(0).textContent = trade.type + (trade.partial ? ' (Partial)' : '');
+        row.insertCell(1).textContent = '$' + trade.entry_price.toFixed(2);
+        row.insertCell(2).textContent = '$' + trade.exit_price.toFixed(2);
+        const plCell = row.insertCell(3);
+        plCell.textContent = '₹' + trade.profit_inr.toLocaleString('en-IN', {maximumFractionDigits: 2});
+        plCell.className = trade.profit_inr >= 0 ? 'profit' : 'loss';
+        row.insertCell(4).textContent = trade.exit_reason || 'Signal';
+      });
+
+      updatePerformance(history);
+    } catch (e) {
+      console.error("Error fetching history:", e);
+    }
+  }
+
+  function updatePerformance(history) {
+    if (history.length === 0) return;
+    const wins = history.filter(t => t.profit_inr > 0).length;
+    const losses = history.filter(t => t.profit_inr < 0).length;
+    const winRate = ((wins / history.length) * 100).toFixed(2);
+    const totalPL = history.reduce((sum, t) => sum + t.profit_inr, 0);
+    document.getElementById('total-trades').textContent = history.length;
+    document.getElementById('win-loss').textContent = `${wins}/${losses}`;
+    document.getElementById('win-rate').textContent = `${winRate}%`;
+    const plSpan = document.getElementById('total-pl');
+    plSpan.textContent = '₹' + totalPL.toLocaleString('en-IN', {maximumFractionDigits: 2});
+    plSpan.className = totalPL >= 0 ? 'profit' : 'loss';
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    updateTradingStatusUI();
+    refreshChart();
+    fetchAndUpdate();
+    fetchHistory();
+    setInterval(fetchAndUpdate, 5000);
+    setInterval(fetchHistory, 10000);
+    setInterval(refreshChart, 30000);
+    setInterval(updateTradingStatusUI, 10000);
+  });
+</script>
 </body>
 </html>
