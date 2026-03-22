@@ -1,4 +1,5 @@
 // bot.js – UT Bot Trading System with Risk Management (Node.js + Upstash Redis REST)
+// ✅ FIXED: Binance 451 geo-block issue with multi-proxy fallback + CryptoCompare kline fallback
 
 require('dotenv').config();
 const express = require('express');
@@ -43,7 +44,7 @@ const RISK_CONFIG_KEY = 'risk_config';
 const TRADING_STATE_KEY = 'trading_state';
 
 // ------------------------------
-// Redis Load/Save Helpers
+// Helper: Load / Save Data from Redis
 // ------------------------------
 async function loadTrades() {
   const data = await redis.get(TRADES_KEY);
@@ -164,9 +165,15 @@ async function saveTradingState(state) {
 }
 
 // ------------------------------
-// Data Sources
+// ✅ Binance API with Multi-Proxy Fallback (fixes 451 geo-block)
 // ------------------------------
+// Priority order:
+// 1. data-api.binance.vision  → Binance's public CDN (least geo-blocked)
+// 2. api.binance.us           → US-region Binance (different IP range)
+// 3. Standard Binance APIs    → Last resort
 const BINANCE_ENDPOINTS = [
+  'https://data-api.binance.vision',  // ✅ Best: Binance public market data CDN
+  'https://api.binance.us',           // ✅ US endpoint (different geo-block rules)
   'https://api1.binance.com',
   'https://api2.binance.com',
   'https://api3.binance.com',
@@ -176,95 +183,178 @@ const BINANCE_ENDPOINTS = [
 ];
 
 async function binanceRequest(path, params = {}) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 5000);
-
   for (const endpoint of BINANCE_ENDPOINTS) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 6000); // 6s per endpoint
+
     try {
       const url = new URL(path, endpoint);
       Object.entries(params).forEach(([k, v]) => url.searchParams.append(k, v));
+
       const response = await fetch(url.toString(), {
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'application/json',
+          'Accept-Language': 'en-US,en;q=0.9',
+          'Cache-Control': 'no-cache'
         },
         signal: controller.signal
       });
+
+      clearTimeout(timeout);
+
       if (response.status === 200) {
-        clearTimeout(timeout);
+        console.log(`✅ Binance data from: ${endpoint}`);
         return await response.json();
       }
-      console.warn(`⚠️ ${endpoint} returned ${response.status}`);
+      console.warn(`⚠️ ${endpoint} returned ${response.status} — trying next...`);
     } catch (err) {
-      console.warn(`⚠️ ${endpoint} error:`, err.message);
+      clearTimeout(timeout);
+      console.warn(`⚠️ ${endpoint} error: ${err.message} — trying next...`);
     }
   }
-  clearTimeout(timeout);
+
+  console.error('❌ All Binance endpoints failed. Falling back to alternative sources.');
   return null;
-}
-
-async function fetchPriceFromCoinGecko() {
-  try {
-    const url = 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd';
-    const response = await fetch(url);
-    const data = await response.json();
-    if (data && data.bitcoin && data.bitcoin.usd) {
-      return data.bitcoin.usd;
-    }
-  } catch (err) {
-    console.warn('CoinGecko error:', err.message);
-  }
-  return null;
-}
-
-async function getCurrentPrice() {
-  const binancePrice = await binanceRequest('/api/v3/ticker/price', { symbol: 'BTCUSDT' });
-  if (binancePrice) return parseFloat(binancePrice.price);
-  const geckoPrice = await fetchPriceFromCoinGecko();
-  if (geckoPrice) return geckoPrice;
-  return null;
-}
-
-async function fetchKlinesFromCoinPaprika(limit = 350, interval = '5m') {
-  const end = new Date();
-  const start = new Date(end.getTime() - (limit * 5 * 60 * 1000));
-  const startISO = start.toISOString().split('.')[0] + 'Z';
-  const endISO = end.toISOString().split('.')[0] + 'Z';
-  const url = `https://api.coinpaprika.com/v1/coins/btc-bitcoin/ohlcv/historical?start=${startISO}&end=${endISO}&limit=${limit}&interval=${interval}`;
-  try {
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = await response.json();
-    // Convert to Binance-like array
-    return data.map(candle => [
-      new Date(candle.time_open).getTime(),
-      candle.open,
-      candle.high,
-      candle.low,
-      candle.close,
-      candle.volume,
-      0, 0, 0, 0, 0, 0
-    ]);
-  } catch (err) {
-    console.warn('CoinPaprika error:', err.message);
-    return null;
-  }
-}
-
-async function getKlines(symbol = 'BTCUSDT', interval = '5m', limit = 350) {
-  const binanceKlines = await binanceRequest('/api/v3/klines', { symbol, interval, limit });
-  if (binanceKlines) return binanceKlines;
-  console.log('Binance failed, trying CoinPaprika...');
-  return await fetchKlinesFromCoinPaprika(limit, interval);
 }
 
 // ------------------------------
-// UT Bot Logic
+// ✅ CoinGecko Fallback — Price only
+// ------------------------------
+async function fetchPriceFromCoinGecko() {
+  try {
+    const url = 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd';
+    const response = await fetch(url, { timeout: 6000 });
+    const data = await response.json();
+    if (data && data.bitcoin && data.bitcoin.usd) {
+      console.log('✅ Price from CoinGecko');
+      return data.bitcoin.usd;
+    }
+  } catch (err) {
+    console.warn('CoinGecko price error:', err.message);
+  }
+  return null;
+}
+
+// ------------------------------
+// ✅ CryptoCompare Fallback — Klines (OHLCV candle data)
+// Converts CryptoCompare minute data to Binance kline format:
+// [openTime, open, high, low, close, volume, ...]
+// ------------------------------
+async function fetchKlinesFromCryptoCompare(limit = 350) {
+  try {
+    const url = `https://min-api.cryptocompare.com/data/v2/histominute?fsym=BTC&tsym=USD&limit=${limit}&aggregate=5`;
+    const response = await fetch(url, { timeout: 8000 });
+    const data = await response.json();
+
+    if (data && data.Data && data.Data.Data && data.Data.Data.length > 0) {
+      console.log('✅ Klines from CryptoCompare (fallback)');
+      // Map to Binance kline format: [openTime, open, high, low, close, volume]
+      return data.Data.Data.map(c => [
+        c.time * 1000,           // openTime (ms)
+        String(c.open),          // open
+        String(c.high),          // high
+        String(c.low),           // low
+        String(c.close),         // close
+        String(c.volumefrom),    // volume
+        c.time * 1000 + 299999,  // closeTime
+        String(c.volumeto),      // quoteAssetVolume
+        0, '0', '0', '0'         // filler fields
+      ]);
+    }
+  } catch (err) {
+    console.warn('CryptoCompare klines error:', err.message);
+  }
+  return null;
+}
+
+// ------------------------------
+// ✅ Bybit Fallback — Klines (very permissive geo-access)
+// ------------------------------
+async function fetchKlinesFromBybit(limit = 350) {
+  try {
+    // Bybit uses different interval format: '5' = 5 minutes
+    const url = `https://api.bybit.com/v5/market/kline?category=spot&symbol=BTCUSDT&interval=5&limit=${limit}`;
+    const response = await fetch(url, { timeout: 8000 });
+    const data = await response.json();
+
+    if (data && data.result && data.result.list && data.result.list.length > 0) {
+      console.log('✅ Klines from Bybit (fallback)');
+      // Bybit format: [startTime, open, high, low, close, volume, turnover]
+      // Reverse because Bybit returns newest first
+      return data.result.list.reverse().map(c => [
+        parseInt(c[0]),  // openTime (ms)
+        c[1],            // open
+        c[2],            // high
+        c[3],            // low
+        c[4],            // close
+        c[5],            // volume
+        parseInt(c[0]) + 299999, // closeTime
+        c[6],            // quoteVolume
+        0, '0', '0', '0'
+      ]);
+    }
+  } catch (err) {
+    console.warn('Bybit klines error:', err.message);
+  }
+  return null;
+}
+
+// ------------------------------
+// Main Price & Kline Fetchers
+// ------------------------------
+async function getCurrentPrice() {
+  // 1. Try Binance (all proxies)
+  const binancePrice = await binanceRequest('/api/v3/ticker/price', { symbol: 'BTCUSDT' });
+  if (binancePrice && binancePrice.price) return parseFloat(binancePrice.price);
+
+  // 2. Try Bybit price
+  try {
+    const bybitUrl = 'https://api.bybit.com/v5/market/tickers?category=spot&symbol=BTCUSDT';
+    const res = await fetch(bybitUrl, { timeout: 6000 });
+    const data = await res.json();
+    if (data?.result?.list?.[0]?.lastPrice) {
+      console.log('✅ Price from Bybit');
+      return parseFloat(data.result.list[0].lastPrice);
+    }
+  } catch (err) {
+    console.warn('Bybit price error:', err.message);
+  }
+
+  // 3. Fallback to CoinGecko
+  const geckoPrice = await fetchPriceFromCoinGecko();
+  if (geckoPrice) return geckoPrice;
+
+  console.error('❌ All price sources failed');
+  return null;
+}
+
+async function getKlines(symbol = 'BTCUSDT', interval = '5m', limit = 350) {
+  // 1. Try Binance (all proxies)
+  const binanceKlines = await binanceRequest('/api/v3/klines', { symbol, interval, limit });
+  if (binanceKlines && binanceKlines.length > 0) return binanceKlines;
+
+  // 2. Try Bybit
+  const bybitKlines = await fetchKlinesFromBybit(limit);
+  if (bybitKlines && bybitKlines.length > 0) return bybitKlines;
+
+  // 3. Try CryptoCompare
+  const ccKlines = await fetchKlinesFromCryptoCompare(limit);
+  if (ccKlines && ccKlines.length > 0) return ccKlines;
+
+  console.error('❌ All kline sources failed');
+  return null;
+}
+
+// ------------------------------
+// UT Bot Logic (pure JS)
 // ------------------------------
 function calcUtbot(klines, keyvalue, atrPeriod) {
   const close = klines.map(k => parseFloat(k[4]));
   const high = klines.map(k => parseFloat(k[2]));
   const low = klines.map(k => parseFloat(k[3]));
 
+  // Calculate TR
   const tr = [];
   for (let i = 0; i < high.length; i++) {
     if (i === 0) tr.push(high[i] - low[i]);
@@ -276,6 +366,7 @@ function calcUtbot(klines, keyvalue, atrPeriod) {
     }
   }
 
+  // ATR (simple moving average)
   const atr = [];
   for (let i = 0; i < tr.length; i++) {
     if (i < atrPeriod - 1) atr.push(null);
@@ -393,7 +484,7 @@ function calculateStopLoss(entry, type, atr, utbotStop, config) {
     case 'utbot':
       stop = utbotStop || fixedStop;
       break;
-    default:
+    default: // hybrid
       stop = type === 'LONG'
         ? Math.max(atrStop, fixedStop)
         : Math.min(atrStop, fixedStop);
@@ -497,8 +588,10 @@ async function checkAccountProtection(balance) {
 async function canOpenTrade(balance) {
   const daily = await checkDailyLimits();
   if (!daily.allowed) return daily;
+
   const account = await checkAccountProtection(balance);
   if (!account.allowed) return account;
+
   return { allowed: true, reason: null };
 }
 
@@ -788,7 +881,7 @@ app.get('/signal', async (req, res) => {
         holding: !!openTrade,
         position_type: openTrade?.type || null,
         entry_price: openTrade?.entry_price || null,
-        action: `⸏️ PAUSED: ${tradingAllowed.reason}`,
+        action: `⏸️ PAUSED: ${tradingAllowed.reason}`,
         last_closed_trade: null,
         latest_order: data.order_log?.slice(-1)[0] || null,
         live_pl_inr: livePl,
@@ -985,7 +1078,7 @@ app.post('/trading-control', async (req, res) => {
 });
 
 // ------------------------------
-// Helper for getRiskStatus
+// Helper for getRiskStatus (used in routes)
 // ------------------------------
 async function getRiskStatus() {
   const config = await loadRiskConfig();
@@ -1031,4 +1124,5 @@ cron.schedule('0 * * * *', resetDailyIfNeeded);
 // ------------------------------
 app.listen(port, () => {
   console.log(`✅ Server running on port ${port}`);
+  console.log(`📡 Data source priority: Binance CDN → Bybit → CryptoCompare → CoinGecko`);
 });
