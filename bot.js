@@ -1,5 +1,6 @@
 // bot.js – UT Bot Trading System with Risk Management (Node.js + Upstash Redis REST)
 // ✅ FIXED: Binance 451 geo-block issue with multi-proxy fallback + CryptoCompare kline fallback
+// ✅ ADDED: resume_at_hours flag for "Resume at Trading Hours" button
 
 require('dotenv').config();
 const express = require('express');
@@ -152,7 +153,8 @@ async function loadTradingState() {
       start_hour: 18,
       end_hour: 23,
       manual_pause: false,
-      force_start: false
+      force_start: false,
+      resume_at_hours: false   // 👈 new flag
     };
     await redis.set(TRADING_STATE_KEY, JSON.stringify(defaultState));
     return defaultState;
@@ -167,13 +169,9 @@ async function saveTradingState(state) {
 // ------------------------------
 // ✅ Binance API with Multi-Proxy Fallback (fixes 451 geo-block)
 // ------------------------------
-// Priority order:
-// 1. data-api.binance.vision  → Binance's public CDN (least geo-blocked)
-// 2. api.binance.us           → US-region Binance (different IP range)
-// 3. Standard Binance APIs    → Last resort
 const BINANCE_ENDPOINTS = [
-  'https://data-api.binance.vision',  // ✅ Best: Binance public market data CDN
-  'https://api.binance.us',           // ✅ US endpoint (different geo-block rules)
+  'https://data-api.binance.vision',
+  'https://api.binance.us',
   'https://api1.binance.com',
   'https://api2.binance.com',
   'https://api3.binance.com',
@@ -185,7 +183,7 @@ const BINANCE_ENDPOINTS = [
 async function binanceRequest(path, params = {}) {
   for (const endpoint of BINANCE_ENDPOINTS) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 6000); // 6s per endpoint
+    const timeout = setTimeout(() => controller.abort(), 6000);
 
     try {
       const url = new URL(path, endpoint);
@@ -238,8 +236,6 @@ async function fetchPriceFromCoinGecko() {
 
 // ------------------------------
 // ✅ CryptoCompare Fallback — Klines (OHLCV candle data)
-// Converts CryptoCompare minute data to Binance kline format:
-// [openTime, open, high, low, close, volume, ...]
 // ------------------------------
 async function fetchKlinesFromCryptoCompare(limit = 350) {
   try {
@@ -249,17 +245,16 @@ async function fetchKlinesFromCryptoCompare(limit = 350) {
 
     if (data && data.Data && data.Data.Data && data.Data.Data.length > 0) {
       console.log('✅ Klines from CryptoCompare (fallback)');
-      // Map to Binance kline format: [openTime, open, high, low, close, volume]
       return data.Data.Data.map(c => [
-        c.time * 1000,           // openTime (ms)
-        String(c.open),          // open
-        String(c.high),          // high
-        String(c.low),           // low
-        String(c.close),         // close
-        String(c.volumefrom),    // volume
-        c.time * 1000 + 299999,  // closeTime
-        String(c.volumeto),      // quoteAssetVolume
-        0, '0', '0', '0'         // filler fields
+        c.time * 1000,
+        String(c.open),
+        String(c.high),
+        String(c.low),
+        String(c.close),
+        String(c.volumefrom),
+        c.time * 1000 + 299999,
+        String(c.volumeto),
+        0, '0', '0', '0'
       ]);
     }
   } catch (err) {
@@ -273,24 +268,21 @@ async function fetchKlinesFromCryptoCompare(limit = 350) {
 // ------------------------------
 async function fetchKlinesFromBybit(limit = 350) {
   try {
-    // Bybit uses different interval format: '5' = 5 minutes
     const url = `https://api.bybit.com/v5/market/kline?category=spot&symbol=BTCUSDT&interval=5&limit=${limit}`;
     const response = await fetch(url, { timeout: 8000 });
     const data = await response.json();
 
     if (data && data.result && data.result.list && data.result.list.length > 0) {
       console.log('✅ Klines from Bybit (fallback)');
-      // Bybit format: [startTime, open, high, low, close, volume, turnover]
-      // Reverse because Bybit returns newest first
       return data.result.list.reverse().map(c => [
-        parseInt(c[0]),  // openTime (ms)
-        c[1],            // open
-        c[2],            // high
-        c[3],            // low
-        c[4],            // close
-        c[5],            // volume
-        parseInt(c[0]) + 299999, // closeTime
-        c[6],            // quoteVolume
+        parseInt(c[0]),
+        c[1],
+        c[2],
+        c[3],
+        c[4],
+        c[5],
+        parseInt(c[0]) + 299999,
+        c[6],
         0, '0', '0', '0'
       ]);
     }
@@ -304,11 +296,9 @@ async function fetchKlinesFromBybit(limit = 350) {
 // Main Price & Kline Fetchers
 // ------------------------------
 async function getCurrentPrice() {
-  // 1. Try Binance (all proxies)
   const binancePrice = await binanceRequest('/api/v3/ticker/price', { symbol: 'BTCUSDT' });
   if (binancePrice && binancePrice.price) return parseFloat(binancePrice.price);
 
-  // 2. Try Bybit price
   try {
     const bybitUrl = 'https://api.bybit.com/v5/market/tickers?category=spot&symbol=BTCUSDT';
     const res = await fetch(bybitUrl, { timeout: 6000 });
@@ -321,7 +311,6 @@ async function getCurrentPrice() {
     console.warn('Bybit price error:', err.message);
   }
 
-  // 3. Fallback to CoinGecko
   const geckoPrice = await fetchPriceFromCoinGecko();
   if (geckoPrice) return geckoPrice;
 
@@ -330,15 +319,12 @@ async function getCurrentPrice() {
 }
 
 async function getKlines(symbol = 'BTCUSDT', interval = '5m', limit = 350) {
-  // 1. Try Binance (all proxies)
   const binanceKlines = await binanceRequest('/api/v3/klines', { symbol, interval, limit });
   if (binanceKlines && binanceKlines.length > 0) return binanceKlines;
 
-  // 2. Try Bybit
   const bybitKlines = await fetchKlinesFromBybit(limit);
   if (bybitKlines && bybitKlines.length > 0) return bybitKlines;
 
-  // 3. Try CryptoCompare
   const ccKlines = await fetchKlinesFromCryptoCompare(limit);
   if (ccKlines && ccKlines.length > 0) return ccKlines;
 
@@ -841,6 +827,20 @@ async function isTradingAllowed() {
   const state = await loadTradingState();
   if (state.force_start) return { allowed: true, reason: null };
   if (state.manual_pause) return { allowed: false, reason: 'Trading manually paused' };
+
+  // Handle resume_at_hours flag
+  if (state.resume_at_hours) {
+    const withinHours = isWithinTradingHours(state);
+    if (withinHours) {
+      // Now within allowed hours, clear flag and allow trading
+      state.resume_at_hours = false;
+      await saveTradingState(state);
+      return { allowed: true, reason: null };
+    } else {
+      return { allowed: false, reason: 'Will resume at next trading hour' };
+    }
+  }
+
   if (!isWithinTradingHours(state)) {
     const now = new Date();
     return { allowed: false, reason: `Outside trading hours (${state.start_hour}:00 - ${state.end_hour}:00). Current: ${now.getHours()}:00` };
@@ -1037,16 +1037,19 @@ app.post('/trading-control', async (req, res) => {
       case 'pause':
         state.manual_pause = true;
         state.force_start = false;
+        state.resume_at_hours = false;
         await saveTradingState(state);
         return res.json({ success: true, message: 'Trading paused manually' });
       case 'resume':
         state.manual_pause = false;
         state.force_start = false;
+        state.resume_at_hours = false;
         await saveTradingState(state);
         return res.json({ success: true, message: 'Trading resumed' });
       case 'force_start':
         state.manual_pause = false;
         state.force_start = true;
+        state.resume_at_hours = false;
         await saveTradingState(state);
         return res.json({ success: true, message: 'Force start activated - Trading 24/7' });
       case 'force_stop':
@@ -1058,6 +1061,7 @@ app.post('/trading-control', async (req, res) => {
             : 'No open position to close';
           state.manual_pause = true;
           state.force_start = false;
+          state.resume_at_hours = false;
           await saveTradingState(state);
           return res.json({ success: true, message });
         } else {
@@ -1069,6 +1073,13 @@ app.post('/trading-control', async (req, res) => {
         state.enabled = req.body.enabled ?? state.enabled;
         await saveTradingState(state);
         return res.json({ success: true, message: 'Trading hours updated' });
+      case 'resume_at_hours':
+        // Set the flag: will start trading at next allowed hour
+        state.manual_pause = false;
+        state.force_start = false;
+        state.resume_at_hours = true;
+        await saveTradingState(state);
+        return res.json({ success: true, message: 'Will start trading at next trading hour' });
       default:
         return res.status(400).json({ success: false, error: 'Invalid action' });
     }
