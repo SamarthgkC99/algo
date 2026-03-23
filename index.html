@@ -297,7 +297,7 @@
       <div class="banner-hours" id="banner-hours">Trading Hours: 18:00 – 23:00 | Current: --:--</div>
     </div>
     <div class="banner-btns">
-      <button id="btn-resume"      class="btn btn-green"   onclick="tradingAction('resume')"      style="display:none">▶️ Resume</button>
+      <button id="btn-resume"      class="btn btn-green"   onclick="tradingAction('resume_at_hours')" style="display:none">⏰ Resume at Hours</button>
       <button id="btn-stop"        class="btn btn-red"     onclick="tradingAction('pause')">⏹ Stop Trading</button>
       <button id="btn-force-start" class="btn btn-orange"  onclick="tradingAction('force_start')">🔥 Force Start</button>
       <button id="btn-force-stop"  class="btn btn-darkred" onclick="tradingAction('force_stop')">🛑 Force Stop &amp; Close</button>
@@ -432,7 +432,7 @@
     <div class="hist-scroll">
       <table class="hist-tbl">
         <thead>
-          <tr>
+           <tr>
             <th>Type</th>
             <th>Entry $</th>
             <th>Stop-Loss $</th>
@@ -441,7 +441,7 @@
             <th>Duration</th>
             <th>Exit Reason</th>
             <th>P/L (₹)</th>
-          </tr>
+           </tr>
         </thead>
         <tbody id="history-body">
           <tr><td colspan="8" style="text-align:center;color:var(--text-secondary);padding:20px;">No trades yet</td></tr>
@@ -478,7 +478,8 @@ async function tradingAction(action) {
   const msgs = {
     pause:       '⚠️ Stop trading?\n\nNo new positions will open. Existing trades stay open.',
     force_start: '🔥 Enable 24/7 Force Start?\n\nIgnores trading hours. Use with caution.',
-    force_stop:  '🛑 Force Stop & Close All?\n\nImmediately closes any open position at market price then halts trading.\n\nThis CANNOT be undone!'
+    force_stop:  '🛑 Force Stop & Close All?\n\nImmediately closes any open position at market price then halts trading.\n\nThis CANNOT be undone!',
+    resume_at_hours: '⏰ Resume at next trading hour?\n\nThe bot will start trading as soon as the allowed hour begins.'
   };
   if (msgs[action] && !confirm(msgs[action])) return;
 
@@ -525,8 +526,8 @@ function renderBanner(d) {
   // Remove all state classes
   ['s-running','s-paused','s-waiting','s-force'].forEach(c => banner.classList.remove(c));
 
-  // Hide all, then show what's needed
-  [bRes, bStop, bFS, bFX].forEach(b => { b.style.display = 'none'; b.disabled = false; });
+  // Reset button states
+  [bRes, bStop, bFS, bFX].forEach(b => { b.style.display = 'none'; b.disabled = false; b.textContent = b.id === 'btn-resume' ? '⏰ Resume at Hours' : b.textContent; });
 
   const s = d.state;
 
@@ -545,6 +546,14 @@ function renderBanner(d) {
   } else if (!d.trading_allowed) {
     banner.classList.add('s-waiting');
     title.innerHTML = '⏰ Outside Trading Hours <span class="spill sp-wait">WAITING</span>';
+    // Show resume button only if not already pending
+    if (!s.resume_at_hours) {
+      bRes.style.display = 'inline-block';
+    } else {
+      bRes.style.display = 'inline-block';
+      bRes.textContent = '⏰ Pending...';
+      bRes.disabled = true;
+    }
     bFS.style.display = 'inline-block';
     bFX.style.display = 'inline-block';
 
@@ -556,17 +565,36 @@ function renderBanner(d) {
     bFX.style.display   = 'inline-block';
   }
 
-  if (s.force_start) {
-    const istTime = new Date().toLocaleTimeString('en-IN', {timeZone:'Asia/Kolkata', hour:'2-digit', minute:'2-digit', hour12:false});
-hours.textContent = `Force Mode: 24/7 | Current: ${istTime} IST`;
-  } else if (s.enabled) {
-   const istTime = new Date().toLocaleTimeString('en-IN', {timeZone:'Asia/Kolkata', hour:'2-digit', minute:'2-digit', hour12:false});
-hours.textContent = `Trading Hours: ${String(s.start_hour).padStart(2,'0')}:00 – ${String(s.end_hour).padStart(2,'0')}:00 | Current: ${istTime} IST`;
-  } else {
-    const istTime = new Date().toLocaleTimeString('en-IN', {timeZone:'Asia/Kolkata', hour:'2-digit', minute:'2-digit', hour12:false});
-hours.textContent = `Always Active (no hour restriction) | Current: ${istTime} IST`;
-  }
+  // Update hours text with static part and dynamic time
+  const prefix = getHoursPrefix(s);
+  updateBannerTime(prefix);
 }
+
+function getHoursPrefix(state) {
+  if (state.force_start) return 'Force Mode: 24/7 | Current:';
+  if (state.enabled) {
+    return `Trading Hours: ${String(state.start_hour).padStart(2,'0')}:00 – ${String(state.end_hour).padStart(2,'0')}:00 | Current:`;
+  }
+  return 'Always Active (no hour restriction) | Current:';
+}
+
+function updateBannerTime(prefix) {
+  const hoursSpan = document.getElementById('banner-hours');
+  if (!hoursSpan) return;
+  const now = new Date();
+  const istTime = now.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false });
+  hoursSpan.textContent = `${prefix} ${istTime}`;
+}
+
+// Live clock update
+setInterval(() => {
+  const hoursSpan = document.getElementById('banner-hours');
+  if (hoursSpan && hoursSpan.textContent) {
+    const currentText = hoursSpan.textContent;
+    const prefix = currentText.split('|')[0] + '|';
+    updateBannerTime(prefix);
+  }
+}, 1000);
 
 // ════════════════════════════════════════════════════
 // MANUAL PRICE
@@ -626,7 +654,6 @@ async function clearManualLot() {
 // ════════════════════════════════════════════════════
 async function setRR(mode) {
   currentRR = mode;
-  // Toggle buttons — map colons/dots to underscores for IDs
   const idMap = { 'none':'rr-none', '1:1':'rr-1_1', '1:1.5':'rr-1_1_5', '1:2':'rr-1_2', '1:3':'rr-1_3' };
   Object.values(idMap).forEach(id => document.getElementById(id)?.classList.remove('active'));
   if (idMap[mode]) document.getElementById(idMap[mode])?.classList.add('active');
