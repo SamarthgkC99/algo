@@ -1,8 +1,10 @@
 // bot.js – UT Bot Trading System with Risk Management (Node.js + Upstash Redis REST)
 // ✅ Fixed: Binance 451 geo-block with multi-proxy fallback + CryptoCompare kline fallback
 // ✅ Added: Cooldown after trade – wait for next signal before re-entering
-// ✅ Fixed: Daily limits reset at midnight IST (Asia/Kolkata) using date string comparison
+// ✅ Fixed: Daily limits reset at midnight IST using date string comparison
 // ✅ Added: USDT/INR rate management, export history, clear all trades
+// ✅ Added: Risk‑fixed position sizing (fixed INR risk per trade)
+// ✅ Removed: Daily consecutive losses tracking
 
 require('dotenv').config();
 const express = require('express');
@@ -101,7 +103,6 @@ async function resetRiskState() {
     daily_loss: 0,
     daily_profit: 0,
     daily_trades: 0,
-    consecutive_losses: 0,
     last_reset: todayStr,
     peak_balance: START_BALANCE
   };
@@ -131,16 +132,16 @@ async function loadRiskConfig() {
         ]
       },
       position_sizing: {
-        method: 'percentage',
-        value: 5.0,
+        method: 'percentage',        // 'percentage', 'fixed', or 'risk_fixed'
+        value: 5.0,                 // percentage if method=percentage, fixed BTC if method=fixed, risk amount if method=risk_fixed
         min_position_size: 0.0001,
-        max_position_size: 0.01
+        max_position_size: 0.01,
+        risk_amount: 100            // INR, used only if method='risk_fixed'
       },
       daily_limits: {
         enabled: true,
         max_daily_loss: 1000.0,
         max_daily_trades: 20,
-        max_consecutive_losses: 5,
         reset_hour: 0
       },
       account_protection: {
@@ -430,19 +431,42 @@ async function getUTBotSignal() {
 // ------------------------------
 // Risk Management Functions
 // ------------------------------
-async function calculatePositionSize(balance) {
-  const config = await loadRiskConfig();
-  const method = config.position_sizing.method;
-  let size = config.position_sizing.value;
-  if (method === 'percentage') {
-    const price = await getCurrentPrice();
-    const btcPriceInr = price * (await getUSDTINR());
-    const positionValueInr = balance * (size / 100);
-    size = positionValueInr / btcPriceInr;
+async function calculatePositionSize(balance, entryPrice, type, stopLoss, atr, config) {
+  const sizing = config.position_sizing;
+  let size;
+
+  switch (sizing.method) {
+    case 'percentage':
+      // Use current price for valuation (entryPrice is already the current price)
+      const btcPriceInr = entryPrice * (await getUSDTINR());
+      const positionValueInr = balance * (sizing.value / 100);
+      size = positionValueInr / btcPriceInr;
+      break;
+
+    case 'fixed':
+      size = sizing.value; // fixed BTC amount
+      break;
+
+    case 'risk_fixed':
+      if (!stopLoss) {
+        // fallback to percentage if stop loss is not set
+        const btcPriceInr = entryPrice * (await getUSDTINR());
+        const positionValueInr = balance * (5 / 100);
+        size = positionValueInr / btcPriceInr;
+      } else {
+        const usdtInr = await getUSDTINR();
+        const slDistance = Math.abs(entryPrice - stopLoss);
+        const riskPerTrade = sizing.risk_amount; // INR
+        size = riskPerTrade / (slDistance * usdtInr);
+      }
+      break;
+
+    default:
+      size = 0.001;
   }
-  const min = config.position_sizing.min_position_size;
-  const max = config.position_sizing.max_position_size;
-  size = Math.min(max, Math.max(min, size));
+
+  // apply min/max
+  size = Math.min(sizing.max_position_size, Math.max(sizing.min_position_size, size));
   return parseFloat(size.toFixed(6));
 }
 
@@ -527,9 +551,6 @@ async function checkDailyLimits() {
   if (state.daily_trades >= limits.max_daily_trades) {
     return { allowed: false, reason: `Daily trade limit reached (${state.daily_trades} / ${limits.max_daily_trades})` };
   }
-  if (state.consecutive_losses >= limits.max_consecutive_losses) {
-    return { allowed: false, reason: `Max consecutive losses reached (${state.consecutive_losses})` };
-  }
   return { allowed: true, reason: null };
 }
 
@@ -565,10 +586,8 @@ async function recordTradeResult(profitLoss) {
   state.daily_trades++;
   if (profitLoss < 0) {
     state.daily_loss += Math.abs(profitLoss);
-    state.consecutive_losses++;
   } else {
     state.daily_profit += profitLoss;
-    state.consecutive_losses = 0;
   }
   await saveRiskState(state);
 }
@@ -702,8 +721,8 @@ async function updateDemoTrade(signal, price, atrValue, utbotStop) {
         openTrade = null;
       }
 
-      const positionSize = await calculatePositionSize(data.balance);
       const stopLoss = calculateStopLoss(price, 'LONG', atrValue, utbotStop, config);
+      const positionSize = await calculatePositionSize(data.balance, price, 'LONG', stopLoss, atrValue, config);
       const tpLevels = calculateTakeProfitLevels(price, 'LONG', atrValue, config);
       const tp1Price = tpLevels[0]?.price || null;
 
@@ -720,7 +739,7 @@ async function updateDemoTrade(signal, price, atrValue, utbotStop) {
         atr_at_entry: atrValue,
         breakeven_moved: false
       };
-      actionMessage += `🟢 OPENED LONG @ $${price.toFixed(2)} | Size: ${positionSize} BTC | SL: $${stopLoss.toFixed(2)} | TP1: $${tp1Price?.toFixed(2) || 'N/A'}`;
+      actionMessage += `🟢 OPENED LONG @ $${price.toFixed(2)} | Size: ${positionSize} BTC | SL: $${stopLoss?.toFixed(2) || 'N/A'} | TP1: $${tp1Price?.toFixed(2) || 'N/A'}`;
       logEntry.action = 'OPEN_LONG';
       logEntry.stop_loss = stopLoss;
       logEntry.tp1 = tp1Price;
@@ -746,8 +765,8 @@ async function updateDemoTrade(signal, price, atrValue, utbotStop) {
         openTrade = null;
       }
 
-      const positionSize = await calculatePositionSize(data.balance);
       const stopLoss = calculateStopLoss(price, 'SHORT', atrValue, utbotStop, config);
+      const positionSize = await calculatePositionSize(data.balance, price, 'SHORT', stopLoss, atrValue, config);
       const tpLevels = calculateTakeProfitLevels(price, 'SHORT', atrValue, config);
       const tp1Price = tpLevels[0]?.price || null;
 
@@ -764,7 +783,7 @@ async function updateDemoTrade(signal, price, atrValue, utbotStop) {
         atr_at_entry: atrValue,
         breakeven_moved: false
       };
-      actionMessage += `🔴 OPENED SHORT @ $${price.toFixed(2)} | Size: ${positionSize} BTC | SL: $${stopLoss.toFixed(2)} | TP1: $${tp1Price?.toFixed(2) || 'N/A'}`;
+      actionMessage += `🔴 OPENED SHORT @ $${price.toFixed(2)} | Size: ${positionSize} BTC | SL: $${stopLoss?.toFixed(2) || 'N/A'} | TP1: $${tp1Price?.toFixed(2) || 'N/A'}`;
       logEntry.action = 'OPEN_SHORT';
       logEntry.stop_loss = stopLoss;
       logEntry.tp1 = tp1Price;
@@ -1156,8 +1175,7 @@ async function getRiskStatus() {
     daily_stats: {
       trades: `${state.daily_trades}/${limits.max_daily_trades}`,
       loss: `₹${state.daily_loss.toFixed(2)}/₹${limits.max_daily_loss.toFixed(2)}`,
-      profit: `₹${state.daily_profit.toFixed(2)}`,
-      consecutive_losses: `${state.consecutive_losses}/${limits.max_consecutive_losses}`
+      profit: `₹${state.daily_profit.toFixed(2)}`
     },
     limits_usage: {
       trades_pct: (state.daily_trades / limits.max_daily_trades) * 100,
