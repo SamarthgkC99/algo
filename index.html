@@ -9,6 +9,8 @@
 <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-financial@0.2.0/dist/chartjs-chart-financial.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
 <style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
   :root {
     --bg-primary: #0d1117;
     --bg-secondary: #161b22;
@@ -93,12 +95,13 @@
     padding: 20px;
   }
   .overrides-card h2 { color: var(--accent-purple); border-color: rgba(188,140,255,0.25); }
-  .overrides-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+  .overrides-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  @media (max-width: 1000px) { .overrides-grid { grid-template-columns: 1fr; } }
   .ov-block { background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 10px; padding: 15px; }
   .ov-block h3 { color: var(--text-secondary); font-size: 0.85rem; }
-  .inp-row { display: flex; gap: 8px; margin-top: 4px; }
+  .inp-row { display: flex; gap: 8px; margin-top: 4px; flex-wrap: wrap; align-items: center; }
   .ov-inp {
-    flex: 1;
+    flex: 1; min-width: 100px;
     background: var(--bg-primary);
     border: 1px solid var(--border-color);
     color: var(--text-primary);
@@ -214,11 +217,10 @@
   .r-force { border-color: var(--accent-orange); color: var(--accent-orange); }
   .dur-badge { font-size: 0.73rem; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
   .pl-cell { font-weight: 700; font-size: 0.86rem; }
-  @media (max-width: 1200px) {
+  @media (max-width: 1000px) {
     .container { grid-template-columns: 1fr; }
     .chart-container { grid-column: 1/-1; }
     .chart-wrapper { height: 380px; }
-    .overrides-grid { grid-template-columns: 1fr; }
   }
 </style>
 </head>
@@ -245,15 +247,33 @@
   <div class="overrides-card">
     <h2>⚙️ Manual Overrides & Risk Settings</h2>
     <div class="overrides-grid">
+      <!-- Position Sizing -->
       <div class="ov-block">
-        <h3>📦 Lot Size (BTC)</h3>
+        <h3>📏 Position Sizing</h3>
         <div class="inp-row">
-          <input id="inp-lot" class="ov-inp" type="number" placeholder="0.0001 – 0.01" step="0.0001" min="0.0001" max="0.01">
-          <button class="btn btn-purple" onclick="setManualLot()">Apply</button>
-          <button class="btn btn-ghost" onclick="clearManualLot()">Reset</button>
+          <select id="pos-method" class="ov-inp" style="min-width: 140px;">
+            <option value="percentage">Percentage of Balance (5%)</option>
+            <option value="fixed">Fixed BTC Lot</option>
+            <option value="risk_fixed">Fixed Risk (INR per trade)</option>
+          </select>
         </div>
-        <div class="ov-st dim" id="st-lot">⬤ Auto sizing (5% of balance)</div>
+        <div id="risk-amt-container" style="display:none;">
+          <div class="inp-row">
+            <input id="risk-amount" class="ov-inp" type="number" placeholder="Risk per trade (INR)" step="10" min="10" value="100">
+            <button class="btn btn-purple" onclick="setRiskAmount()">Set</button>
+          </div>
+        </div>
+        <div id="lot-container" style="display:none;">
+          <div class="inp-row">
+            <input id="inp-lot" class="ov-inp" type="number" placeholder="0.0001 – 0.01" step="0.0001" min="0.0001" max="0.01">
+            <button class="btn btn-purple" onclick="setManualLot()">Apply</button>
+            <button class="btn btn-ghost" onclick="clearManualLot()">Reset</button>
+          </div>
+        </div>
+        <div class="ov-st dim" id="st-pos">⬤ Current: Percentage (5% of balance)</div>
       </div>
+
+      <!-- Risk:Reward Mode -->
       <div class="ov-block">
         <h3>📐 Risk : Reward Mode (ATR-based)</h3>
         <div class="rr-row-btns">
@@ -266,6 +286,8 @@
         <div class="rr-preview" id="rr-preview"><span style="color:var(--text-secondary);">Select a ratio to preview ATR-based levels</span></div>
         <div class="ov-st dim" id="st-rr">⬤ No RR override active</div>
       </div>
+
+      <!-- USDT/INR Rate -->
       <div class="ov-block">
         <h3>💰 USDT to INR Rate</h3>
         <div class="inp-row">
@@ -328,7 +350,6 @@
       <h2>📊 Daily Limits</h2>
       <div class="lim-block"><div class="lim-lbl">Trades: <span id="lim-trades">0/20</span></div><div class="prog-bar"><div class="prog-fill" id="pb-trades" style="width:0%"></div></div></div>
       <div class="lim-block"><div class="lim-lbl">Daily Loss: <span id="lim-loss">₹0/₹1000</span></div><div class="prog-bar"><div class="prog-fill" id="pb-loss" style="width:0%"></div></div></div>
-      <div class="lim-block"><div class="lim-lbl">Consec. Losses: <span id="lim-consec">0/5</span></div><div class="prog-bar"><div class="prog-fill" id="pb-consec" style="width:0%"></div></div></div>
     </div>
 
     <!-- Live Orders -->
@@ -341,11 +362,11 @@
     <div class="card">
       <h2>📈 Performance</h2>
       <table class="perf-tbl">
-        <tr><td>Total Trades</td><td id="perf-total">0</td></tr>
-        <tr><td>Win Rate</td><td id="perf-wr">0%</td></tr>
-        <tr><td>Wins / Losses</td><td id="perf-wl">0/0</td></tr>
-        <tr><td>Total P/L</td><td id="perf-pl" class="profit">₹0</td></tr>
-      </table>
+        <tr><th>Total Trades</th><td id="perf-total">0</td></tr>
+        <tr><th>Win Rate</th><td id="perf-wr">0%</td></tr>
+        <tr><th>Wins / Losses</th><td id="perf-wl">0/0</td></tr>
+        <tr><th>Total P/L</th><td id="perf-pl" class="profit">₹0</td></tr>
+       </table>
     </div>
   </div>
 
@@ -393,6 +414,7 @@ let lastATR = 0;
 let lastData = null;
 const RR_MAP = { 'none':null, '1:1':1, '1:1.5':1.5, '1:2':2, '1:3':3 };
 
+// ----- Trading controls -----
 async function tradingAction(action) {
   const msgs = {
     pause: '⚠️ Stop trading?\n\nNo new positions will open. Existing trades stay open.',
@@ -474,6 +496,7 @@ function renderBanner(d) {
   }
 }
 
+// ----- USDT/INR Rate -----
 async function fetchUSDTINR() {
   try {
     const res = await fetch('/usdt-inr-rate');
@@ -484,7 +507,6 @@ async function fetchUSDTINR() {
     document.getElementById('st-rate').innerHTML = `❌ Failed to load rate`;
   }
 }
-
 async function setUSDTINR() {
   const rate = parseFloat(document.getElementById('inp-rate').value);
   if (isNaN(rate) || rate <= 0) {
@@ -510,39 +532,122 @@ async function setUSDTINR() {
   }
 }
 
+// ----- Position Sizing UI -----
+async function loadPositionMethod() {
+  try {
+    const cfg = await (await fetch('/risk-config')).json();
+    const method = cfg.position_sizing.method;
+    document.getElementById('pos-method').value = method;
+    document.getElementById('risk-amount').value = cfg.position_sizing.risk_amount || 100;
+    document.getElementById('inp-lot').value = cfg.position_sizing.value;
+
+    const riskContainer = document.getElementById('risk-amt-container');
+    const lotContainer = document.getElementById('lot-container');
+    riskContainer.style.display = method === 'risk_fixed' ? 'block' : 'none';
+    lotContainer.style.display = method === 'fixed' ? 'block' : 'none';
+
+    let statusText = '';
+    if (method === 'percentage') statusText = '⬤ Percentage of balance (5%)';
+    else if (method === 'fixed') statusText = `⬤ Fixed lot: ${cfg.position_sizing.value} BTC`;
+    else statusText = `⬤ Risk per trade: ₹${cfg.position_sizing.risk_amount}`;
+    setSt('st-pos', 'dim', statusText);
+  } catch(e) { console.error('loadPositionMethod:', e); }
+}
+
+async function updatePositionMethod() {
+  const method = document.getElementById('pos-method').value;
+  const riskAmt = parseFloat(document.getElementById('risk-amount').value);
+  const fixedLot = parseFloat(document.getElementById('inp-lot').value);
+  try {
+    const cfg = await (await fetch('/risk-config')).json();
+    cfg.position_sizing.method = method;
+    if (method === 'percentage') {
+      cfg.position_sizing.value = 5.0;  // default percentage
+      cfg.position_sizing.risk_amount = 100;
+    } else if (method === 'fixed') {
+      if (!isNaN(fixedLot) && fixedLot >= 0.0001 && fixedLot <= 0.01) {
+        cfg.position_sizing.value = fixedLot;
+      } else {
+        cfg.position_sizing.value = 0.001; // fallback
+      }
+      cfg.position_sizing.risk_amount = 100;
+    } else if (method === 'risk_fixed') {
+      if (!isNaN(riskAmt) && riskAmt > 0) {
+        cfg.position_sizing.risk_amount = riskAmt;
+      }
+      cfg.position_sizing.value = 5.0;
+    }
+    const r = await fetch('/risk-config', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(cfg) });
+    const d = await r.json();
+    if (d.success) {
+      loadPositionMethod();
+      setSt('st-pos', 'ok', `✅ Method set to ${method}`);
+    } else {
+      setSt('st-pos', 'err', '❌ ' + (d.error||'Update failed'));
+    }
+  } catch(e) { setSt('st-pos', 'err', '❌ '+e.message); }
+}
+
+async function setRiskAmount() {
+  const riskAmt = parseFloat(document.getElementById('risk-amount').value);
+  if (isNaN(riskAmt) || riskAmt <= 0) {
+    alert('Enter a valid risk amount (INR)');
+    return;
+  }
+  try {
+    const cfg = await (await fetch('/risk-config')).json();
+    cfg.position_sizing.method = 'risk_fixed';
+    cfg.position_sizing.risk_amount = riskAmt;
+    const r = await fetch('/risk-config', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(cfg) });
+    const d = await r.json();
+    if (d.success) {
+      loadPositionMethod();
+      setSt('st-pos', 'ok', `✅ Risk amount set to ₹${riskAmt}`);
+    } else {
+      setSt('st-pos', 'err', '❌ ' + (d.error||'Update failed'));
+    }
+  } catch(e) { setSt('st-pos', 'err', '❌ '+e.message); }
+}
+
 async function setManualLot() {
-  const v = parseFloat(document.getElementById('inp-lot').value);
-  if (isNaN(v) || v < 0.0001 || v > 0.01) { setSt('st-lot','err','❌ Must be 0.0001 – 0.01 BTC'); return; }
-  manualLot = v;
-  setSt('st-lot','on','⏳ Saving to bot…');
+  const lot = parseFloat(document.getElementById('inp-lot').value);
+  if (isNaN(lot) || lot < 0.0001 || lot > 0.01) {
+    alert('Lot must be between 0.0001 and 0.01 BTC');
+    return;
+  }
   try {
     const cfg = await (await fetch('/risk-config')).json();
     cfg.position_sizing.method = 'fixed';
-    cfg.position_sizing.value = v;
-    cfg.position_sizing.min_position_size = v;
-    cfg.position_sizing.max_position_size = v;
-    const r = await fetch('/risk-config',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(cfg) });
+    cfg.position_sizing.value = lot;
+    const r = await fetch('/risk-config', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(cfg) });
     const d = await r.json();
-    if (d.success) setSt('st-lot','ok',`✅ Fixed at ${v} BTC`);
-    else { setSt('st-lot','err','❌ '+(d.error||'Save failed')); manualLot=null; }
-  } catch(e) { setSt('st-lot','err','❌ '+e.message); manualLot=null; }
+    if (d.success) {
+      loadPositionMethod();
+      setSt('st-pos', 'ok', `✅ Fixed lot set to ${lot} BTC`);
+    } else {
+      setSt('st-pos', 'err', '❌ ' + (d.error||'Update failed'));
+    }
+  } catch(e) { setSt('st-pos', 'err', '❌ '+e.message); }
 }
 
 async function clearManualLot() {
-  manualLot = null;
-  document.getElementById('inp-lot').value = '';
-  setSt('st-lot','on','⏳ Resetting…');
   try {
     const cfg = await (await fetch('/risk-config')).json();
-    cfg.position_sizing.method='percentage'; cfg.position_sizing.value=5.0;
-    cfg.position_sizing.min_position_size=0.0001; cfg.position_sizing.max_position_size=0.01;
-    const r = await fetch('/risk-config',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(cfg) });
+    cfg.position_sizing.method = 'percentage';
+    cfg.position_sizing.value = 5.0;
+    cfg.position_sizing.risk_amount = 100;
+    const r = await fetch('/risk-config', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(cfg) });
     const d = await r.json();
-    if (d.success) setSt('st-lot','ok','✅ Reset to auto (5% balance)');
-    else setSt('st-lot','err','❌ Reset failed');
-  } catch(e) { setSt('st-lot','err','❌ '+e.message); }
+    if (d.success) {
+      loadPositionMethod();
+      setSt('st-pos', 'ok', '✅ Reset to percentage sizing (5% of balance)');
+    } else {
+      setSt('st-pos', 'err', '❌ Reset failed');
+    }
+  } catch(e) { setSt('st-pos', 'err', '❌ '+e.message); }
 }
 
+// ----- RR Mode -----
 async function setRR(mode) {
   currentRR = mode;
   const idMap = { 'none':'rr-none', '1:1':'rr-1_1', '1:1.5':'rr-1_1_5', '1:2':'rr-1_2', '1:3':'rr-1_3' };
@@ -601,6 +706,7 @@ async function pushRRToBot() {
   } catch(e) { setSt('st-rr','err','❌ '+e.message); }
 }
 
+// ----- Fetch and update dashboard -----
 async function fetchAndUpdate() {
   try {
     const res = await fetch('/signal');
@@ -646,11 +752,8 @@ async function fetchAndUpdate() {
       const lu = d.risk_status.limits_usage;
       document.getElementById('lim-trades').textContent = ds.trades;
       document.getElementById('lim-loss').textContent = ds.loss;
-      document.getElementById('lim-consec').textContent = ds.consecutive_losses;
       setProg('pb-trades', lu.trades_pct);
       setProg('pb-loss', lu.loss_pct);
-      const cp = ds.consecutive_losses.split('/');
-      setProg('pb-consec', cp.length===2 ? (parseInt(cp[0])/parseInt(cp[1]))*100 : 0);
     }
     if (d.latest_order) {
       const ol = document.getElementById('order-list');
@@ -665,6 +768,7 @@ async function fetchAndUpdate() {
   } catch(e) { console.error('fetchAndUpdate:', e); }
 }
 
+// ----- History -----
 async function fetchHistory() {
   try {
     const res = await fetch('/history');
@@ -672,7 +776,7 @@ async function fetchHistory() {
     const hist = await res.json();
     const tbody = document.getElementById('history-body');
     if (!hist.length) {
-      tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-secondary);padding:20px;">No trades yet</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-secondary);">No trades yet</td></tr>';
       return;
     }
     tbody.innerHTML = '';
@@ -732,7 +836,6 @@ function fmtDur(ms) {
 async function exportHistory() {
   window.open('/export-history', '_blank');
 }
-
 async function clearHistory() {
   if (!confirm('⚠️ Are you sure you want to clear ALL trade history and reset balance?\nThis action cannot be undone.')) return;
   try {
@@ -750,6 +853,7 @@ async function clearHistory() {
   }
 }
 
+// ----- Chart -----
 async function refreshChart() {
   try {
     const r = await fetch('/chart-data');
@@ -829,12 +933,10 @@ function cPos(e) {
   const p = Chart.helpers.getRelativePosition(e, chartInstance);
   return { x: chartInstance.scales.x.getValueForPixel(p.x), y: chartInstance.scales.y.getValueForPixel(p.y) };
 }
-
 function ensAnno() {
   if (!chartInstance.options.plugins.annotation.annotations)
     chartInstance.options.plugins.annotation.annotations = {};
 }
-
 function onMD(e) {
   if (drawMode==='cursor') return;
   const p = cPos(e); if (!p) return;
@@ -855,7 +957,6 @@ function onMD(e) {
   }
   chartInstance.update();
 }
-
 function onMM(e) {
   if (!isDrawing||!curAnno) return;
   const p = cPos(e); if (!p) return;
@@ -871,7 +972,6 @@ function onMM(e) {
   }
   chartInstance.update();
 }
-
 function onMU(e) {
   if (!isDrawing) return;
   isDrawing = false;
@@ -885,7 +985,6 @@ function onMU(e) {
   }
   curAnno = null;
 }
-
 function restoreDrawings() {
   if (!chartInstance) return; ensAnno();
   const anns = chartInstance.options.plugins.annotation.annotations;
@@ -908,21 +1007,31 @@ function setProg(id, pct) {
   el.style.width = Math.min(pct,100)+'%';
   el.className = 'prog-fill'+(pct>=80?' danger':pct>=60?' warn':'');
 }
-
 function setSt(id, type, msg) {
   const el = document.getElementById(id); if (!el) return;
   el.className = 'ov-st '+(type||'dim');
   el.textContent = msg;
 }
 
+// ----- Initialisation -----
 document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('pos-method').addEventListener('change', () => {
+    const method = document.getElementById('pos-method').value;
+    document.getElementById('risk-amt-container').style.display = method === 'risk_fixed' ? 'block' : 'none';
+    document.getElementById('lot-container').style.display = method === 'fixed' ? 'block' : 'none';
+    updatePositionMethod();
+  });
   document.getElementById('inp-lot').addEventListener('keydown', e => e.key==='Enter' && setManualLot());
+  document.getElementById('risk-amount').addEventListener('change', () => updatePositionMethod());
   document.getElementById('inp-rate').addEventListener('keydown', e => e.key==='Enter' && setUSDTINR());
+
+  loadPositionMethod();
   syncBanner();
   refreshChart();
   fetchAndUpdate();
   fetchHistory();
   fetchUSDTINR();
+
   setInterval(fetchAndUpdate, 5000);
   setInterval(fetchHistory, 12000);
   setInterval(refreshChart, 30000);
