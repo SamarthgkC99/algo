@@ -72,7 +72,16 @@ async function saveTrades(data) {
 async function loadRiskState() {
   const data = await redis.get(RISK_STATE_KEY);
   if (!data) return resetRiskState();
-  return typeof data === 'string' ? JSON.parse(data) : data;
+  let state = typeof data === 'string' ? JSON.parse(data) : data;
+
+  // If last_reset is a number (old format), convert to date string
+  if (typeof state.last_reset === 'number') {
+    const date = new Date(state.last_reset);
+    const istDate = date.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
+    state.last_reset = new Date(istDate).toISOString().split('T')[0];
+    await saveRiskState(state);
+  }
+  return state;
 }
 
 async function saveRiskState(state) {
@@ -80,12 +89,16 @@ async function saveRiskState(state) {
 }
 
 async function resetRiskState() {
+  // Get current date in IST (YYYY-MM-DD)
+  const nowIST = new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
+  const todayStr = new Date(nowIST).toISOString().split('T')[0];
+
   const state = {
     daily_loss: 0,
     daily_profit: 0,
     daily_trades: 0,
     consecutive_losses: 0,
-    last_reset: Date.now(),
+    last_reset: todayStr,      // store as date string
     peak_balance: START_BALANCE
   };
   await saveRiskState(state);
@@ -1131,20 +1144,18 @@ async function resetDailyIfNeeded() {
   const state = await loadRiskState();
   const resetHour = config.daily_limits.reset_hour; // 0 = midnight
 
+  // Get current date in IST
   const nowIST = new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
   const now = new Date(nowIST);
-  const lastReset = new Date(state.last_reset);
+  const todayStr = now.toISOString().split('T')[0];
 
-  const resetDateToday = new Date(now);
-  resetDateToday.setHours(resetHour, 0, 0, 0);
-
-  if (now >= resetDateToday && lastReset < resetDateToday) {
+  // If last_reset is not today, reset
+  if (state.last_reset !== todayStr) {
     await resetRiskState();
-    console.log('🔄 Daily risk state reset (IST midnight)');
+    console.log(`🔄 Daily risk state reset at ${now.toISOString()} (IST midnight)`);
   }
 }
 
-cron.schedule('0 * * * *', resetDailyIfNeeded);
 
 // Start server
 app.listen(port, () => {
