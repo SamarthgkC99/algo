@@ -614,6 +614,258 @@
     <div class="card">
       <h2>📈 Performance</h2>
       <table class="perf-tbl">
+        <tr><th>Total Trades</th><td i  .ov-st.ok  { color: var(--accent-green); }
+  .ov-st.on  { color: var(--accent-purple); }
+  .ov-st.err { color: var(--accent-red); }
+  .ov-st.dim { color: var(--text-secondary); }
+  .rr-row-btns { display: flex; gap: 7px; margin-top: 4px; flex-wrap: wrap; }
+  .rr-btn {
+    flex: 1; min-width: 44px;
+    padding: 7px 4px; border-radius: 7px; text-align: center;
+    font-size: 0.78rem; font-weight: 600;
+    border: 2px solid var(--border-color);
+    background: var(--bg-primary); color: var(--text-secondary);
+    cursor: pointer;
+  }
+  .rr-btn.active { border-color: var(--accent-yellow); background: rgba(240,196,66,0.12); color: var(--accent-yellow); }
+  .rr-preview {
+    margin-top: 10px;
+    background: var(--bg-primary); border: 1px solid var(--border-color);
+    border-radius: 7px; padding: 10px 12px;
+    font-size: 0.76rem; line-height: 1.8;
+  }
+  .rr-prow { display: flex; justify-content: space-between; }
+  .rr-lbl { color: var(--text-secondary); }
+  .rr-tp { color: var(--accent-green); font-weight: 600; }
+  .rr-sl { color: var(--accent-red); font-weight: 600; }
+  .rr-rat { color: var(--accent-yellow); font-weight: 700; }
+  .override-badge {
+    display: inline-block; background: var(--accent-purple); color: #fff;
+    font-size: 0.57rem; font-weight: 700; padding: 2px 5px;
+    border-radius: 3px; margin-left: 5px;
+  }
+  .chart-container { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 12px; padding: 15px; grid-column: 1/2; }
+  .chart-wrapper { position: relative; height: 480px; margin-bottom: 12px; }
+  .tool-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; align-items: center; }
+  .pos-row { display: flex; gap: 8px; margin-bottom: 10px; }
+  .draw-btn {
+    background: var(--bg-tertiary); border: 1px solid var(--border-color);
+    color: var(--text-primary); padding: 6px 10px; border-radius: 6px;
+    cursor: pointer; font-size: 0.8rem; display: flex; align-items: center; gap: 5px;
+  }
+  .draw-btn.active { background: var(--accent-blue); border-color: var(--accent-blue); color: #fff; }
+  .draw-btn.danger { border-color: var(--accent-red); color: var(--accent-red); }
+  .pos-btn {
+    flex: 1; padding: 8px; border-radius: 7px; cursor: pointer; font-weight: 600; font-size: 0.83rem; border: none;
+  }
+  .pos-btn.long  { background: var(--accent-green); color: #000; }
+  .pos-btn.short { background: var(--accent-red); color: #fff; }
+  .pos-btn.active { background: var(--accent-blue) !important; color: #fff !important; }
+  .info-section { display: grid; gap: 15px; }
+  .status-card { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 12px; padding: 18px; }
+  .price-display { font-size: 2.5rem; font-weight: 700; margin: 8px 0; line-height: 1.1; }
+  .signal-badge { display: inline-block; font-size: 1.3rem; font-weight: 600; padding: 8px 15px; border-radius: 8px; margin: 6px 0; }
+  .signal-badge.buy  { background: var(--accent-green); color: #000; }
+  .signal-badge.sell { background: var(--accent-red); color: #fff; }
+  .signal-badge.hold { background: var(--bg-tertiary); color: var(--text-secondary); }
+  .action-msg { font-size: 0.83rem; color: var(--accent-blue); margin-top: 8px; min-height: 16px; }
+  .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
+  .info-item { background: var(--bg-tertiary); padding: 11px; border-radius: 8px; border: 1px solid var(--border-color); font-size: 0.78rem; }
+  .info-item span { color: var(--text-secondary); }
+  .info-item strong { display: block; font-size: 1rem; margin-top: 4px; }
+  .risk-panel { background: var(--bg-tertiary); padding: 13px; border-radius: 8px; margin-top: 12px; border: 1px solid var(--border-color); }
+  .risk-panel h3 { font-size: 0.88rem; color: var(--text-secondary); }
+  .rsk-row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 0.8rem; border-bottom: 1px solid var(--border-color); }
+  .rsk-row:last-child { border-bottom: none; }
+  .tp-chip { background: var(--bg-secondary); border: 1px solid var(--border-color); padding: 7px 10px; border-radius: 6px; display: flex; justify-content: space-between; font-size: 0.78rem; margin-top: 5px; }
+  .tp-chip.hit { border-left: 3px solid var(--accent-green); background: rgba(63,185,80,0.07); }
+  .tp-chip.pending { border-left: 3px solid var(--accent-yellow); }
+  .strat-badges { display: grid; gap: 7px; margin-top: 12px; }
+  .badge { font-size: 0.67rem; padding: 7px; border-radius: 6px; font-weight: 600; background: var(--bg-tertiary); border: 1px solid var(--border-color); text-align: center; }
+  .badge.buy-b { border-color: var(--accent-green); color: var(--accent-green); }
+  .badge.sell-b { border-color: var(--accent-red); color: var(--accent-red); }
+  .lim-block { margin-bottom: 10px; }
+  .lim-lbl { font-size: 0.74rem; color: var(--text-secondary); margin-bottom: 4px; }
+  .prog-bar { height: 7px; background: var(--border-color); border-radius: 4px; overflow: hidden; }
+  .prog-fill { height: 100%; background: var(--accent-green); transition: width 0.3s; }
+  .prog-fill.warn { background: var(--accent-yellow); }
+  .prog-fill.danger { background: var(--accent-red); }
+  #order-list { list-style: none; max-height: 220px; overflow-y: auto; }
+  #order-list li { padding: 9px 10px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: flex-start; font-size: 0.77rem; }
+  .o-buy { border-left: 3px solid var(--accent-green); padding-left: 9px !important; }
+  .o-sell { border-left: 3px solid var(--accent-red); padding-left: 9px !important; }
+  .o-time { color: var(--text-secondary); font-size: 0.7rem; }
+  .o-price { font-weight: 600; font-size: 0.84rem; }
+  .perf-tbl { width: 100%; font-size: 0.82rem; }
+  .perf-tbl td { padding: 8px 4px; border-bottom: 1px solid var(--border-color); }
+  .perf-tbl td:last-child { text-align: right; font-weight: 600; }
+  .profit { color: var(--accent-green); }
+  .loss { color: var(--accent-red); }
+  .history-container { grid-column: 1/-1; }
+  .hist-scroll { overflow-x: auto; }
+  .hist-tbl { width: 100%; border-collapse: collapse; font-size: 0.79rem; min-width: 900px; }
+  .hist-tbl th {
+    padding: 10px; text-align: left;
+    border-bottom: 2px solid var(--border-color);
+    color: var(--text-secondary); font-weight: 600; font-size: 0.73rem;
+    background: var(--bg-tertiary);
+  }
+  .hist-tbl td { padding: 10px; border-bottom: 1px solid var(--border-color); vertical-align: middle; }
+  .type-pill { display: inline-block; padding: 3px 9px; border-radius: 20px; font-size: 0.7rem; font-weight: 700; }
+  .type-long { background: rgba(63,185,80,0.13); color: var(--accent-green); border: 1px solid rgba(63,185,80,0.25); }
+  .type-short { background: rgba(248,81,73,0.13); color: var(--accent-red); border: 1px solid rgba(248,81,73,0.25); }
+  .reason-pill { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 0.69rem; font-weight: 500; background: var(--bg-tertiary); border: 1px solid var(--border-color); }
+  .r-sl { border-color: var(--accent-red); color: var(--accent-red); }
+  .r-tp { border-color: var(--accent-green); color: var(--accent-green); }
+  .r-sig { border-color: var(--accent-blue); color: var(--accent-blue); }
+  .r-force { border-color: var(--accent-orange); color: var(--accent-orange); }
+  .dur-badge { font-size: 0.73rem; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+  .pl-cell { font-weight: 700; font-size: 0.86rem; }
+  @media (max-width: 1000px) {
+    .container { grid-template-columns: 1fr; }
+    .chart-container { grid-column: 1/-1; }
+    .chart-wrapper { height: 380px; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <h1>🎯 UT Bot Trading Dashboard</h1>
+
+  <!-- Trading Banner -->
+  <div id="trading-banner" class="trading-banner s-running">
+    <div class="banner-left">
+      <div class="banner-title" id="banner-title">▶️ Trading Active <span class="spill sp-run">RUNNING</span></div>
+      <div class="banner-hours" id="banner-hours">Trading Hours: 18:00 – 23:00 | Current: --:--</div>
+    </div>
+    <div class="banner-btns">
+      <button id="btn-resume" class="btn btn-green" onclick="tradingAction('resume')" style="display:none">▶️ Resume</button>
+      <button id="btn-stop" class="btn btn-red" onclick="tradingAction('pause')">⏹ Stop Trading</button>
+      <button id="btn-force-start" class="btn btn-orange" onclick="tradingAction('force_start')">🔥 Force Start</button>
+      <button id="btn-force-stop" class="btn btn-darkred" onclick="tradingAction('force_stop')">🛑 Force Stop & Close</button>
+    </div>
+  </div>
+
+  <!-- Manual Overrides -->
+  <div class="overrides-card">
+    <h2>⚙️ Manual Overrides & Risk Settings</h2>
+    <div class="overrides-grid">
+      <!-- Position Sizing -->
+      <div class="ov-block">
+        <h3>📏 Position Sizing</h3>
+        <div class="inp-row">
+          <select id="pos-method" class="ov-inp" style="min-width: 140px;">
+            <option value="percentage">Percentage of Balance (5%)</option>
+            <option value="fixed">Fixed BTC Lot</option>
+            <option value="risk_fixed">Fixed Risk (INR per trade)</option>
+          </select>
+        </div>
+        <div id="risk-amt-container" style="display:none;">
+          <div class="inp-row">
+            <input id="risk-amount" class="ov-inp" type="number" placeholder="Risk per trade (INR)" step="10" min="10" value="100">
+            <button class="btn btn-purple" onclick="setRiskAmount()">Set</button>
+          </div>
+        </div>
+        <div id="lot-container" style="display:none;">
+          <div class="inp-row">
+            <input id="inp-lot" class="ov-inp" type="number" placeholder="0.0001 – 0.01" step="0.0001" min="0.0001" max="0.01">
+            <button class="btn btn-purple" onclick="setManualLot()">Apply</button>
+            <button class="btn btn-ghost" onclick="clearManualLot()">Reset</button>
+          </div>
+        </div>
+        <div class="ov-st dim" id="st-pos">⬤ Current: Percentage (5% of balance)</div>
+      </div>
+
+      <!-- Risk:Reward Mode -->
+      <div class="ov-block">
+        <h3>📐 Risk : Reward Mode (ATR-based)</h3>
+        <div class="rr-row-btns">
+          <button class="rr-btn active" id="rr-none" onclick="setRR('none')">Off</button>
+          <button class="rr-btn" id="rr-1_1" onclick="setRR('1:1')">1:1</button>
+          <button class="rr-btn" id="rr-1_1_5" onclick="setRR('1:1.5')">1:1.5</button>
+          <button class="rr-btn" id="rr-1_2" onclick="setRR('1:2')">1:2</button>
+          <button class="rr-btn" id="rr-1_3" onclick="setRR('1:3')">1:3</button>
+        </div>
+        <div class="rr-preview" id="rr-preview"><span style="color:var(--text-secondary);">Select a ratio to preview ATR-based levels</span></div>
+        <div class="ov-st dim" id="st-rr">⬤ No RR override active</div>
+      </div>
+
+      <!-- USDT/INR Rate -->
+      <div class="ov-block">
+        <h3>💰 USDT to INR Rate</h3>
+        <div class="inp-row">
+          <input id="inp-rate" class="ov-inp" type="number" placeholder="e.g. 85.00" step="0.01" min="0">
+          <button class="btn btn-purple" onclick="setUSDTINR()">Save</button>
+        </div>
+        <div class="ov-st dim" id="st-rate">⬤ Current rate: loading...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Chart -->
+  <div class="chart-container">
+    <h2>BTCUSDT · 5m</h2>
+    <div class="tool-row">
+      <button class="draw-btn active" id="db-cursor" onclick="setDraw('cursor')">↖️ Cursor</button>
+      <button class="draw-btn" id="db-hline" onclick="setDraw('hline')">➖ H-Line</button>
+      <button class="draw-btn" id="db-trend" onclick="setDraw('trendline')">📈 Trend</button>
+      <button class="draw-btn danger" onclick="clearDrawings()">🗑 Clear</button>
+      <button class="draw-btn" style="margin-left:auto;" onclick="refreshChart()">↻ Refresh</button>
+      <span style="color:var(--text-secondary);font-size:0.76rem;">Updated: <span id="chart-time">--</span></span>
+    </div>
+    <div class="pos-row">
+      <button class="pos-btn long" id="pb-long" onclick="setDraw('long')">📊 Long Position</button>
+      <button class="pos-btn short" id="pb-short" onclick="setDraw('short')">📊 Short Position</button>
+    </div>
+    <div class="chart-wrapper"><canvas id="priceChart"></canvas></div>
+  </div>
+
+  <!-- Sidebar -->
+  <div class="info-section">
+    <div class="status-card">
+      <div style="color:var(--text-secondary);font-size:0.76rem;">BTC / USDT</div>
+      <div class="price-display" id="price">$—</div>
+      <div class="signal-badge hold" id="signal">Waiting…</div>
+      <div class="action-msg" id="action-msg">Initialising…</div>
+      <div class="info-grid">
+        <div class="info-item"><span>Balance</span><strong id="balance">₹—</strong></div>
+        <div class="info-item"><span>Position</span><strong id="position">NONE</strong></div>
+        <div class="info-item"><span>Entry Price</span><strong id="entry-price">N/A</strong></div>
+        <div class="info-item"><span>Lot Size</span><strong id="position-size">0 BTC</strong></div>
+        <div class="info-item"><span>Live P/L</span><strong id="live-pl">N/A</strong></div>
+        <div class="info-item"><span>Stop-Loss</span><strong id="sl-display">N/A</strong></div>
+      </div>
+      <div class="risk-panel">
+        <h3>🛡️ Risk Management</h3>
+        <div class="rsk-row"><span>Stop-Loss</span><span id="risk-sl">N/A</span></div>
+        <div id="tp-container"></div>
+        <div class="rsk-row"><span>ATR</span><span id="atr-val">—</span></div>
+        <div class="rsk-row"><span>RR Mode</span><span id="rr-active-lbl" style="color:var(--accent-yellow);">Off</span></div>
+      </div>
+      <div class="strat-badges">
+        <div class="badge buy-b">#2 Buy — KV=2, ATR=300</div>
+        <div class="badge sell-b">#1 Sell — KV=2, ATR=1</div>
+      </div>
+    </div>
+
+    <!-- Daily Limits -->
+    <div class="card">
+      <h2>📊 Daily Limits</h2>
+      <div class="lim-block"><div class="lim-lbl">Trades: <span id="lim-trades">0/20</span></div><div class="prog-bar"><div class="prog-fill" id="pb-trades" style="width:0%"></div></div></div>
+      <div class="lim-block"><div class="lim-lbl">Daily Loss: <span id="lim-loss">₹0/₹1000</span></div><div class="prog-bar"><div class="prog-fill" id="pb-loss" style="width:0%"></div></div></div>
+    </div>
+
+    <!-- Live Orders -->
+    <div class="card">
+      <h2>📝 Live Orders</h2>
+      <ul id="order-list"><li style="color:var(--text-secondary);justify-content:center;">Loading…</li></ul>
+    </div>
+
+    <!-- Performance -->
+    <div class="card">
+      <h2>📈 Performance</h2>
+      <table class="perf-tbl">
         <tr><th>Total Trades</th><td id="perf-total">0</td></tr>
         <tr><th>Win Rate</th><td id="perf-wr">0%</td></tr>
         <tr><th>Wins / Losses</th><td id="perf-wl">0/0</td></tr>
