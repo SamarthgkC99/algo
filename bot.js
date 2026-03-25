@@ -1,6 +1,6 @@
 // bot.js – UT Bot Trading System with Risk Management (Node.js + Upstash Redis REST)
 // ✅ FIXED: Binance 451 geo-block issue with multi-proxy fallback + CryptoCompare kline fallback
-// ✅ FIXED: Syntax error in BINANCE_ENDPOINTS definition
+// ✅ FIXED: Syntax error – all braces properly closed
 // ✅ ADDED: Cooldown after trade – wait for next signal before re-entering
 
 require('dotenv').config();
@@ -610,3 +610,544 @@ async function closeFullPosition(data, openTrade, currentPrice, reason) {
 
 async function updateDemoTrade(signal, price, atrValue, utbotStop) {
   signal = signal.charAt(0).toUpperCase() + signal.slice(1).toLowerCase();
+  const data = await loadTrades();
+  const config = await loadRiskConfig();
+  let openTrade = data.open_trade;
+  let actionMessage = '';
+  let lastClosedTrade = null;
+
+  const logEntry = {
+    time: new Date().toISOString(),
+    side: signal,
+    price,
+    quantity: COINS_PER_TRADE
+  };
+
+  // --- Check for stop-loss / take-profit hit ---
+  if (openTrade) {
+    const hitType = (() => {
+      const posType = openTrade.type;
+      const sl = openTrade.stop_loss;
+      const tp1 = openTrade.tp1_price;
+      if (sl && ((posType === 'LONG' && price <= sl) || (posType === 'SHORT' && price >= sl))) return 'SL';
+      if (tp1 && ((posType === 'LONG' && price >= tp1) || (posType === 'SHORT' && price <= tp1))) return 'TP1';
+      return null;
+    })();
+
+    if (hitType === 'SL') {
+      lastClosedTrade = await closeFullPosition(data, openTrade, price, 'Stop-Loss Hit');
+      actionMessage = `🛑 STOP-LOSS HIT @ $${price.toFixed(2)} | P/L: ₹${lastClosedTrade.profit_inr.toFixed(2)}`;
+      logEntry.action = 'STOP_LOSS';
+      logEntry.pl_inr = lastClosedTrade.profit_inr;
+      openTrade = null;
+      // Store the signal that caused the close (the side that was open)
+      data.last_closed_signal = lastClosedTrade.type === 'LONG' ? 'Buy' : 'Sell';
+    } else if (hitType === 'TP1') {
+      lastClosedTrade = await closeFullPosition(data, openTrade, price, 'TP1 Hit - Full Exit');
+      actionMessage = `✅ TP1 HIT @ $${price.toFixed(2)} | FULL EXIT | P/L: ₹${lastClosedTrade.profit_inr.toFixed(2)}`;
+      logEntry.action = 'TP1_FULL_EXIT';
+      logEntry.pl_inr = lastClosedTrade.profit_inr;
+      openTrade = null;
+      data.last_closed_signal = lastClosedTrade.type === 'LONG' ? 'Buy' : 'Sell';
+    } else if (openTrade && openTrade.breakeven_moved && config.stop_loss.trailing_enabled) {
+      const newStop = updateTrailingStop(price, openTrade.type, openTrade.stop_loss, atrValue, config);
+      if (newStop) {
+        openTrade.stop_loss = newStop;
+        actionMessage = `📈 Trailing stop updated to $${newStop.toFixed(2)}`;
+        logEntry.action = 'TRAILING_STOP_UPDATE';
+      }
+    }
+  }
+
+  // --- New trade logic with cooldown ---
+  if (signal === 'Hold') {
+    if (!actionMessage) {
+      actionMessage = 'Holding position. Waiting for next signal.';
+      logEntry.action = 'HOLD';
+    }
+  } else if (signal === 'Buy') {
+    const canTrade = await canOpenTrade(data.balance);
+    if (!canTrade.allowed) {
+      actionMessage = `⚠️ Cannot open BUY: ${canTrade.reason}`;
+      logEntry.action = 'BLOCKED';
+    } else if (openTrade && openTrade.type === 'LONG') {
+      actionMessage = 'Ignoring repeated "Buy" signal. Already in LONG position.';
+      logEntry.action = 'IGNORED';
+    } else if (data.last_closed_signal === 'Buy') {
+      // Cooldown: skip opening if the last closed signal matches current signal
+      actionMessage = '⏳ Cooldown: Waiting for next signal after Buy trade.';
+      logEntry.action = 'COOLDOWN';
+    } else {
+      // If there's an opposite position, close it first
+      if (openTrade && openTrade.type === 'SHORT') {
+        lastClosedTrade = await closeFullPosition(data, openTrade, price, 'Opposite Signal');
+        actionMessage = `CLOSED SHORT @ $${price.toFixed(2)}, P/L: ₹${lastClosedTrade.profit_inr.toFixed(2)}. | `;
+        logEntry.action = 'CLOSE_SHORT';
+        openTrade = null;
+      }
+
+      const positionSize = await calculatePositionSize(data.balance);
+      const stopLoss = calculateStopLoss(price, 'LONG', atrValue, utbotStop, config);
+      const tpLevels = calculateTakeProfitLevels(price, 'LONG', atrValue, config);
+      const tp1Price = tpLevels[0]?.price || null;
+
+      openTrade = {
+        type: 'LONG',
+        entry_price: price,
+        amount: positionSize,
+        original_amount: positionSize,
+        stop_loss: stopLoss,
+        tp1_price: tp1Price,
+        tp_levels: tpLevels.slice(0,1),
+        opened_at: new Date().toISOString(),
+        strategy: 'UT Bot #2 (KV=2, ATR=300)',
+        atr_at_entry: atrValue,
+        breakeven_moved: false
+      };
+      actionMessage += `🟢 OPENED LONG @ $${price.toFixed(2)} | Size: ${positionSize} BTC | SL: $${stopLoss.toFixed(2)} | TP1: $${tp1Price?.toFixed(2) || 'N/A'}`;
+      logEntry.action = 'OPEN_LONG';
+      logEntry.stop_loss = stopLoss;
+      logEntry.tp1 = tp1Price;
+      data.last_signal = 'Buy';
+      data.last_closed_signal = null; // clear cooldown after successful open
+    }
+  } else if (signal === 'Sell') {
+    const canTrade = await canOpenTrade(data.balance);
+    if (!canTrade.allowed) {
+      actionMessage = `⚠️ Cannot open SELL: ${canTrade.reason}`;
+      logEntry.action = 'BLOCKED';
+    } else if (openTrade && openTrade.type === 'SHORT') {
+      actionMessage = 'Ignoring repeated "Sell" signal. Already in SHORT position.';
+      logEntry.action = 'IGNORED';
+    } else if (data.last_closed_signal === 'Sell') {
+      actionMessage = '⏳ Cooldown: Waiting for next signal after Sell trade.';
+      logEntry.action = 'COOLDOWN';
+    } else {
+      if (openTrade && openTrade.type === 'LONG') {
+        lastClosedTrade = await closeFullPosition(data, openTrade, price, 'Opposite Signal');
+        actionMessage = `CLOSED LONG @ $${price.toFixed(2)}, P/L: ₹${lastClosedTrade.profit_inr.toFixed(2)}. | `;
+        logEntry.action = 'CLOSE_LONG';
+        openTrade = null;
+      }
+
+      const positionSize = await calculatePositionSize(data.balance);
+      const stopLoss = calculateStopLoss(price, 'SHORT', atrValue, utbotStop, config);
+      const tpLevels = calculateTakeProfitLevels(price, 'SHORT', atrValue, config);
+      const tp1Price = tpLevels[0]?.price || null;
+
+      openTrade = {
+        type: 'SHORT',
+        entry_price: price,
+        amount: positionSize,
+        original_amount: positionSize,
+        stop_loss: stopLoss,
+        tp1_price: tp1Price,
+        tp_levels: tpLevels.slice(0,1),
+        opened_at: new Date().toISOString(),
+        strategy: 'UT Bot #1 (KV=2, ATR=1)',
+        atr_at_entry: atrValue,
+        breakeven_moved: false
+      };
+      actionMessage += `🔴 OPENED SHORT @ $${price.toFixed(2)} | Size: ${positionSize} BTC | SL: $${stopLoss.toFixed(2)} | TP1: $${tp1Price?.toFixed(2) || 'N/A'}`;
+      logEntry.action = 'OPEN_SHORT';
+      logEntry.stop_loss = stopLoss;
+      logEntry.tp1 = tp1Price;
+      data.last_signal = 'Sell';
+      data.last_closed_signal = null;
+    }
+  }
+
+  if (!data.order_log) data.order_log = [];
+  data.order_log.push(logEntry);
+  if (data.order_log.length > 100) data.order_log.shift();
+
+  data.open_trade = openTrade;
+  await saveTrades(data);
+
+  return {
+    balance: data.balance,
+    holding: !!openTrade,
+    position_type: openTrade?.type || null,
+    action: actionMessage,
+    stop_loss: openTrade?.stop_loss || null,
+    tp_levels: openTrade?.tp_levels || [],
+    position_size: openTrade?.amount || 0
+  };
+}
+
+async function forceClosePosition(currentPrice, reason) {
+  const data = await loadTrades();
+  const openTrade = data.open_trade;
+  if (!openTrade) return null;
+  const closedTrade = await closeFullPosition(data, openTrade, currentPrice, reason);
+  const logEntry = {
+    time: new Date().toISOString(),
+    side: 'CLOSE',
+    action: 'FORCE_CLOSE',
+    price: currentPrice,
+    quantity: openTrade.amount,
+    pl_inr: closedTrade.profit_inr
+  };
+  data.order_log.push(logEntry);
+  await saveTrades(data);
+  return closedTrade;
+}
+
+// ------------------------------
+// Trading Hours & Control
+// ------------------------------
+function isWithinTradingHours(state) {
+  if (state.force_start) return true;
+  if (!state.enabled) return true;
+  const hour = getCurrentHourIST();
+  return hour >= state.start_hour && hour < state.end_hour;
+}
+
+async function isTradingAllowed() {
+  const state = await loadTradingState();
+  if (state.force_start) return { allowed: true, reason: null };
+  if (state.manual_pause) return { allowed: false, reason: 'Trading manually paused' };
+  if (!isWithinTradingHours(state)) {
+    return { allowed: false, reason: `Outside trading hours (${state.start_hour}:00 - ${state.end_hour}:00 IST). Current hour: ${getCurrentHourIST()}:00` };
+  }
+  return { allowed: true, reason: null };
+}
+
+// ------------------------------
+// Express Routes
+// ------------------------------
+app.use(express.json());
+app.use(express.static(__dirname));
+
+app.get('/', (req, res) => {
+  res.sendFile(__dirname + '/index.html');
+});
+
+app.get('/signal', async (req, res) => {
+  try {
+    const tradingAllowed = await isTradingAllowed();
+    const { signal, price, atr, utbot_stop } = await getUTBotSignal();
+
+    if (signal === 'No Data' || price === 0) {
+      return res.status(500).json({ error: 'Could not generate signal' });
+    }
+
+    const data = await loadTrades();
+    const openTrade = data.open_trade;
+    const usdtInr = await getUSDTINR();
+    const livePlUsdt = calculateLivePL(openTrade, price);
+    const livePlInr = livePlUsdt ? livePlUsdt * usdtInr : null;
+
+    let response;
+    if (!tradingAllowed.allowed) {
+      const riskStatus = await getRiskStatus();
+      response = {
+        price,
+        signal: 'Hold',
+        balance: data.balance,
+        holding: !!openTrade,
+        position_type: openTrade?.type || null,
+        entry_price: openTrade?.entry_price || null,
+        action: `⏸️ PAUSED: ${tradingAllowed.reason}`,
+        last_closed_trade: null,
+        latest_order: data.order_log?.slice(-1)[0] || null,
+        live_pl_inr: livePlInr,
+        stop_loss: openTrade?.stop_loss || null,
+        tp_levels: openTrade?.tp_levels || [],
+        position_size: openTrade?.amount || 0,
+        atr,
+        risk_status: riskStatus,
+        trading_allowed: false,
+        pause_reason: tradingAllowed.reason,
+        force_start: (await loadTradingState()).force_start,
+        strategy_info: {
+          buy_strategy: 'UT Bot #2 (KV=2, ATR=300)',
+          sell_strategy: 'UT Bot #1 (KV=2, ATR=1)'
+        }
+      };
+      return res.json(response);
+    }
+
+    const { balance, holding, position_type, action, stop_loss, tp_levels, position_size } =
+      await updateDemoTrade(signal, price, atr, utbot_stop);
+
+    const updatedData = await loadTrades();
+    const riskStatus = await getRiskStatus();
+
+    response = {
+      price,
+      signal,
+      balance,
+      holding,
+      position_type,
+      entry_price: updatedData.open_trade?.entry_price || null,
+      action,
+      last_closed_trade: null,
+      latest_order: updatedData.order_log?.slice(-1)[0] || null,
+      live_pl_inr: livePlInr,
+      stop_loss,
+      tp_levels,
+      position_size,
+      atr,
+      risk_status: riskStatus,
+      trading_allowed: true,
+      pause_reason: null,
+      force_start: (await loadTradingState()).force_start,
+      strategy_info: {
+        buy_strategy: 'UT Bot #2 (KV=2, ATR=300)',
+        sell_strategy: 'UT Bot #1 (KV=2, ATR=1)'
+      }
+    };
+    res.json(response);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/chart-data', async (req, res) => {
+  try {
+    const klines = await getKlines();
+    if (!klines) return res.status(500).json({ error: 'No data' });
+    const candles = klines.map(k => ({
+      time: Math.floor(k[0] / 1000),
+      open: parseFloat(k[1]),
+      high: parseFloat(k[2]),
+      low: parseFloat(k[3]),
+      close: parseFloat(k[4])
+    }));
+    const df1 = calcUtbot(klines, 2, 1);
+    const stopLine = df1.stop.map((val, idx) => ({
+      time: candles[idx].time,
+      value: val
+    }));
+    res.json({ candles, stop_line: stopLine });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/history', async (req, res) => {
+  const data = await loadTrades();
+  res.json(data.history || []);
+});
+
+app.get('/orders', async (req, res) => {
+  const data = await loadTrades();
+  res.json((data.order_log || []).reverse());
+});
+
+app.get('/status', async (req, res) => {
+  const data = await loadTrades();
+  const currentPrice = await getCurrentPrice();
+  const usdtInr = await getUSDTINR();
+  const livePlUsdt = calculateLivePL(data.open_trade, currentPrice);
+  const livePlInr = livePlUsdt ? livePlUsdt * usdtInr : null;
+  const riskStatus = await getRiskStatus();
+  res.json({
+    balance: data.balance,
+    has_open_trade: !!data.open_trade,
+    open_trade: data.open_trade,
+    current_price: currentPrice,
+    live_pl_inr: livePlInr,
+    last_signal: data.last_signal,
+    total_trades: data.history?.length || 0,
+    risk_status: riskStatus,
+    force_start: (await loadTradingState()).force_start
+  });
+});
+
+app.get('/risk-config', async (req, res) => {
+  const config = await loadRiskConfig();
+  res.json(config);
+});
+
+app.post('/risk-config', async (req, res) => {
+  try {
+    const newConfig = req.body;
+    await saveRiskConfig(newConfig);
+    res.json({ success: true, message: 'Risk configuration updated' });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/risk-status', async (req, res) => {
+  try {
+    const status = await getRiskStatus();
+    res.json(status);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/trading-control', async (req, res) => {
+  const state = await loadTradingState();
+  const { allowed, reason } = await isTradingAllowed();
+  res.json({
+    state,
+    trading_allowed: allowed,
+    pause_reason: reason,
+    current_time: new Date().toLocaleTimeString()
+  });
+});
+
+app.post('/trading-control', async (req, res) => {
+  try {
+    const { action } = req.body;
+    const state = await loadTradingState();
+
+    switch (action) {
+      case 'pause':
+        state.manual_pause = true;
+        state.force_start = false;
+        await saveTradingState(state);
+        return res.json({ success: true, message: 'Trading paused manually' });
+      case 'resume':
+        state.manual_pause = false;
+        state.force_start = false;
+        await saveTradingState(state);
+        return res.json({ success: true, message: 'Trading resumed' });
+      case 'force_start':
+        state.manual_pause = false;
+        state.force_start = true;
+        await saveTradingState(state);
+        return res.json({ success: true, message: 'Force start activated - Trading 24/7' });
+      case 'force_stop':
+        const currentPrice = await getCurrentPrice();
+        if (currentPrice) {
+          const closedTrade = await forceClosePosition(currentPrice, 'Force Stop');
+          const message = closedTrade
+            ? `Position closed at $${currentPrice.toFixed(2)} | P/L: ₹${closedTrade.profit_inr.toFixed(2)}`
+            : 'No open position to close';
+          state.manual_pause = true;
+          state.force_start = false;
+          await saveTradingState(state);
+          return res.json({ success: true, message });
+        } else {
+          return res.json({ success: false, message: 'Could not get current price to close position' });
+        }
+      case 'update_hours':
+        state.start_hour = req.body.start_hour ?? state.start_hour;
+        state.end_hour = req.body.end_hour ?? state.end_hour;
+        state.enabled = req.body.enabled ?? state.enabled;
+        await saveTradingState(state);
+        return res.json({ success: true, message: 'Trading hours updated' });
+      default:
+        return res.status(400).json({ success: false, error: 'Invalid action' });
+    }
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// New endpoints for USDT/INR, export, clear
+app.get('/usdt-inr-rate', async (req, res) => {
+  const rate = await getUSDTINR();
+  res.json({ rate });
+});
+
+app.post('/usdt-inr-rate', async (req, res) => {
+  try {
+    const { rate } = req.body;
+    if (typeof rate !== 'number' || rate <= 0) throw new Error('Invalid rate');
+    await setUSDTINR(rate);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/clear-history', async (req, res) => {
+  try {
+    const data = await loadTrades();
+    data.history = [];
+    data.order_log = [];
+    data.balance = START_BALANCE;
+    data.open_trade = null;
+    data.last_closed_signal = null;
+    await saveTrades(data);
+    await resetRiskState();
+    res.json({ success: true, message: 'All trades cleared, balance reset.' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/export-history', async (req, res) => {
+  const data = await loadTrades();
+  const trades = data.history;
+  if (!trades.length) {
+    return res.status(404).json({ error: 'No trades to export' });
+  }
+  const headers = [
+    'Type', 'Entry Price', 'Exit Price', 'Amount (BTC)', 'Stop Loss', 'TP1 Price',
+    'Profit (USDT)', 'Profit (INR)', 'Exit Reason', 'Opened At', 'Closed At', 'Duration (s)'
+  ];
+  const rows = trades.map(t => [
+    t.type,
+    t.entry_price,
+    t.exit_price,
+    t.amount,
+    t.stop_loss ?? 'N/A',
+    t.tp1_price ?? 'N/A',
+    t.profit_usdt,
+    t.profit_inr,
+    t.exit_reason,
+    new Date(t.opened_at).toISOString(),
+    new Date(t.closed_at).toISOString(),
+    t.duration_ms ? (t.duration_ms / 1000).toFixed(1) : 'N/A'
+  ]);
+  const csv = [headers, ...rows].map(row => row.join(',')).join('\n');
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', 'attachment; filename=trade_history.csv');
+  res.send(csv);
+});
+
+// Helper for getRiskStatus
+async function getRiskStatus() {
+  const config = await loadRiskConfig();
+  const state = await loadRiskState();
+  const limits = config.daily_limits;
+  return {
+    daily_stats: {
+      trades: `${state.daily_trades}/${limits.max_daily_trades}`,
+      loss: `₹${state.daily_loss.toFixed(2)}/₹${limits.max_daily_loss.toFixed(2)}`,
+      profit: `₹${state.daily_profit.toFixed(2)}`,
+      consecutive_losses: `${state.consecutive_losses}/${limits.max_consecutive_losses}`
+    },
+    limits_usage: {
+      trades_pct: (state.daily_trades / limits.max_daily_trades) * 100,
+      loss_pct: (state.daily_loss / limits.max_daily_loss) * 100
+    },
+    config
+  };
+}
+
+// Cron job: reset daily risk state based on IST midnight
+async function resetDailyIfNeeded() {
+  const config = await loadRiskConfig();
+  const state = await loadRiskState();
+  const resetHour = config.daily_limits.reset_hour; // 0 = midnight
+
+  const nowIST = new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
+  const now = new Date(nowIST);
+  const lastReset = new Date(state.last_reset);
+
+  const resetDateToday = new Date(now);
+  resetDateToday.setHours(resetHour, 0, 0, 0);
+
+  if (now >= resetDateToday && lastReset < resetDateToday) {
+    await resetRiskState();
+    console.log('🔄 Daily risk state reset (IST midnight)');
+  }
+}
+
+cron.schedule('0 * * * *', resetDailyIfNeeded);
+
+// Start server
+app.listen(port, () => {
+  console.log(`✅ Server running on port ${port}`);
+  console.log(`📡 Data source priority: Binance CDN → Bybit → CryptoCompare → CoinGecko`);
+});
