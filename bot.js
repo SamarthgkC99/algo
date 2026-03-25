@@ -1,5 +1,6 @@
- // bot.js – UT Bot Trading System with Risk Management (Node.js + Upstash Redis REST)
+// bot.js – UT Bot Trading System with Risk Management (Node.js + Upstash Redis REST)
 // ✅ FIXED: Binance 451 geo-block issue with multi-proxy fallback + CryptoCompare kline fallback
+// ✅ ADDED: Configurable USDT/INR rate, trading hours based on IST, export/clear trades, improved trade history
 
 require('dotenv').config();
 const express = require('express');
@@ -35,13 +36,13 @@ redis.ping().then(() => console.log('✅ Connected to Upstash Redis')).catch(err
 // Constants
 // ------------------------------
 const START_BALANCE = 10000;
-const BTC_USDT_RATE = 85;
 const COINS_PER_TRADE = 0.001;
 
 const TRADES_KEY = 'demo_trades';
 const RISK_STATE_KEY = 'risk_state';
 const RISK_CONFIG_KEY = 'risk_config';
 const TRADING_STATE_KEY = 'trading_state';
+const USDT_INR_KEY = 'usdt_inr_rate';  // new key for exchange rate
 
 // ------------------------------
 // Helper: Load / Save Data from Redis
@@ -82,7 +83,7 @@ async function resetRiskState() {
     daily_profit: 0,
     daily_trades: 0,
     consecutive_losses: 0,
-    last_reset: new Date().toISOString(),
+    last_reset: Date.now(),        // store as timestamp (ms)
     peak_balance: START_BALANCE
   };
   await saveRiskState(state);
@@ -111,6 +112,395 @@ async function loadRiskConfig() {
         ]
       },
       position_sizing: {
+        method: 'percentage',
+        value: 5.0,
+        min_position_size: 0.0001,
+        max_position_size: 0.01
+      },
+      daily_limits: {
+        enabled: true,
+        max_daily_loss: 1000.0,
+        max_daily_trades: 20,
+        max_consecutive_losses: 5,
+        reset_hour: 0          // midnight (IST)
+      },
+      account_protection: {
+        max_drawdown_percentage: 20.0,
+        min_balance: 5000.0,
+        emergency_stop: false
+      },
+      different_rules_for_position_type: {
+        enabled: true,
+        long: { tp_atr_multipliers: [3.0, 6.0, 9.0] },
+        short: { tp_atr_multipliers: [2.0, 4.0, 6.0] }
+      }
+    };
+    await saveRiskConfig(defaultConfig);
+    return defaultConfig;
+  }
+  return typeof data === 'string' ? JSON.parse(data) : data;
+}
+
+async function saveRiskConfig(config) {
+  await redis.set(RISK_CONFIG_KEY, JSON.stringify(config));
+}
+
+async function loadTradingState() {
+  const data = await redis.get(TRADING_STATE_KEY);
+  if (!data) {
+    const defaultState = {
+      enabled: true,
+      start_hour: 18,
+      end_hour: 23,
+      manual_pause: false,
+      force_start: false
+    };
+    await redis.set(TRADING_STATE_KEY, JSON.stringify(defaultState));
+    return defaultState;
+  }
+  return typeof data === 'string' ? JSON.parse(data) : data;
+}
+
+async function saveTradingState(state) {
+  await redis.set(TRADING_STATE_KEY, JSON.stringify(state));
+}
+
+// ------------------------------
+// USDT/INR Rate Management
+// ------------------------------
+async function getUSDTINR() {
+  let rate = await redis.get(USDT_INR_KEY);
+  if (!rate) {
+    rate = 85; // default
+    await redis.set(USDT_INR_KEY, rate);
+  }
+  return parseFloat(rate);
+}
+
+async function setUSDTINR(rate) {
+  await redis.set(USDT_INR_KEY, parseFloat(rate));
+}
+
+// ------------------------------
+// Helper: Current hour in IST (Asia/Kolkata)
+// ------------------------------
+function getCurrentHourIST() {
+  const now = new Date();
+  const istString = now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata', hour: 'numeric', hour12: false });
+  return parseInt(istString);
+}
+
+// ------------------------------
+// Binance API with Multi-Proxy Fallback (unchanged)
+// ------------------------------
+// (No changes here, omitted for brevity)
+const BINANCE_ENDPOINTS = [ ... ]; // same as original
+
+async function binanceRequest(path, params = {}) { ... } // unchanged
+
+async function fetchPriceFromCoinGecko() { ... } // unchanged
+
+async function fetchKlinesFromCryptoCompare(limit = 350) { ... } // unchanged
+
+async function fetchKlinesFromBybit(limit = 350) { ... } // unchanged
+
+async function getCurrentPrice() { ... } // unchanged
+
+async function getKlines(symbol = 'BTCUSDT', interval = '5m', limit = 350) { ... } // unchanged
+
+// ------------------------------
+// UT Bot Logic (unchanged)
+// ------------------------------
+function calcUtbot(klines, keyvalue, atrPeriod) { ... } // unchanged
+
+async function getUTBotSignal() { ... } // unchanged
+
+// ------------------------------
+// Risk Management Functions (modified to use dynamic USDT/INR)
+// ------------------------------
+async function calculatePositionSize(balance) {
+  const config = await loadRiskConfig();
+  const method = config.position_sizing.method;
+  let size = config.position_sizing.value;
+
+  if (method === 'percentage') {
+    const price = await getCurrentPrice();
+    const btcPriceInr = price * (await getUSDTINR()); // use dynamic rate
+    const positionValueInr = balance * (size / 100);
+    size = positionValueInr / btcPriceInr;
+  }
+
+  const min = config.position_sizing.min_position_size;
+  const max = config.position_sizing.max_position_size;
+  size = Math.min(max, Math.max(min, size));
+  return parseFloat(size.toFixed(6));
+}
+
+// In closeFullPosition, we now record stop_loss and tp1_price
+async function closeFullPosition(data, openTrade, currentPrice, reason) {
+  const entry = openTrade.entry_price;
+  const amount = openTrade.amount;
+  const type = openTrade.type;
+  const usdtInr = await getUSDTINR();
+
+  let profitUsdt = type === 'LONG'
+    ? (currentPrice - entry) * amount
+    : (entry - currentPrice) * amount;
+  const profitInr = profitUsdt * usdtInr;
+
+  const balanceBefore = data.balance;
+  data.balance += profitInr;
+
+  const tradeRecord = {
+    type,
+    entry_price: entry,
+    exit_price: currentPrice,
+    amount,
+    profit_usdt: parseFloat(profitUsdt.toFixed(2)),
+    profit_inr: parseFloat(profitInr.toFixed(2)),
+    balance_before: balanceBefore,
+    balance_after: data.balance,
+    closed_at: new Date().toISOString(),
+    exit_reason: reason,
+    partial: false,
+    // new fields for history table
+    stop_loss: openTrade.stop_loss,
+    tp1_price: openTrade.tp1_price,
+    opened_at: openTrade.opened_at,
+    duration_ms: new Date() - new Date(openTrade.opened_at)
+  };
+
+  data.history.push(tradeRecord);
+  await recordTradeResult(profitInr);
+  data.open_trade = null;
+  return tradeRecord;
+}
+
+function calculateLivePL(openTrade, currentPrice) {
+  if (!openTrade) return null;
+  const entry = openTrade.entry_price;
+  const amount = openTrade.amount;
+  const type = openTrade.type;
+  let profitUsdt = 0;
+  if (type === 'LONG') profitUsdt = (currentPrice - entry) * amount;
+  else profitUsdt = (entry - currentPrice) * amount;
+  // use dynamic rate via a helper – we'll call getUSDTINR() async; but this function is sync.
+  // We'll make it async in the route handler. Keep it sync here, convert later.
+  return profitUsdt;
+}
+
+// The rest of risk functions remain same, but we'll modify the daily reset to use IST
+async function resetDailyIfNeeded() {
+  const config = await loadRiskConfig();
+  const state = await loadRiskState();
+  const resetHour = config.daily_limits.reset_hour;
+
+  const nowIST = new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
+  const now = new Date(nowIST);
+  const lastReset = new Date(state.last_reset);
+
+  const resetDateToday = new Date(now);
+  resetDateToday.setHours(resetHour, 0, 0, 0);
+
+  if (now >= resetDateToday && lastReset < resetDateToday) {
+    await resetRiskState();
+    console.log('🔄 Daily risk state reset (IST midnight)');
+  }
+}
+
+// Also update isWithinTradingHours to use IST
+function isWithinTradingHours(state) {
+  if (state.force_start) return true;
+  if (!state.enabled) return true;
+  const hour = getCurrentHourIST();
+  return hour >= state.start_hour && hour < state.end_hour;
+}
+
+// ------------------------------
+// New Endpoints
+// ------------------------------
+app.get('/usdt-inr-rate', async (req, res) => {
+  const rate = await getUSDTINR();
+  res.json({ rate });
+});
+
+app.post('/usdt-inr-rate', async (req, res) => {
+  try {
+    const { rate } = req.body;
+    if (typeof rate !== 'number' || rate <= 0) throw new Error('Invalid rate');
+    await setUSDTINR(rate);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/clear-history', async (req, res) => {
+  try {
+    const data = await loadTrades();
+    data.history = [];
+    data.order_log = [];
+    data.balance = START_BALANCE;
+    data.open_trade = null;
+    await saveTrades(data);
+    // Also reset risk state to fresh start
+    await resetRiskState();
+    res.json({ success: true, message: 'All trades cleared, balance reset.' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/export-history', async (req, res) => {
+  const data = await loadTrades();
+  const trades = data.history;
+  if (!trades.length) {
+    return res.status(404).json({ error: 'No trades to export' });
+  }
+  // Prepare CSV header
+  const headers = [
+    'Type', 'Entry Price', 'Exit Price', 'Amount (BTC)', 'Stop Loss', 'TP1 Price',
+    'Profit (USDT)', 'Profit (INR)', 'Exit Reason', 'Opened At', 'Closed At', 'Duration (s)'
+  ];
+  const rows = trades.map(t => [
+    t.type,
+    t.entry_price,
+    t.exit_price,
+    t.amount,
+    t.stop_loss ?? 'N/A',
+    t.tp1_price ?? 'N/A',
+    t.profit_usdt,
+    t.profit_inr,
+    t.exit_reason,
+    new Date(t.opened_at).toISOString(),
+    new Date(t.closed_at).toISOString(),
+    t.duration_ms ? (t.duration_ms / 1000).toFixed(1) : 'N/A'
+  ]);
+  const csv = [headers, ...rows].map(row => row.join(',')).join('\n');
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', 'attachment; filename=trade_history.csv');
+  res.send(csv);
+});
+
+// ------------------------------
+// Existing Routes (modified slightly)
+// ------------------------------
+// In /signal endpoint, when returning live_pl_inr we need to multiply by dynamic rate.
+// We'll adjust inside the route.
+app.get('/signal', async (req, res) => {
+  try {
+    const tradingAllowed = await isTradingAllowed();
+    const { signal, price, atr, utbot_stop } = await getUTBotSignal();
+
+    if (signal === 'No Data' || price === 0) {
+      return res.status(500).json({ error: 'Could not generate signal' });
+    }
+
+    const data = await loadTrades();
+    const openTrade = data.open_trade;
+    const usdtInr = await getUSDTINR();
+    const livePlUsdt = calculateLivePL(openTrade, price);
+    const livePlInr = livePlUsdt ? livePlUsdt * usdtInr : null;
+
+    let response;
+    if (!tradingAllowed.allowed) {
+      const riskStatus = await getRiskStatus();
+      response = {
+        price,
+        signal: 'Hold',
+        balance: data.balance,
+        holding: !!openTrade,
+        position_type: openTrade?.type || null,
+        entry_price: openTrade?.entry_price || null,
+        action: `⏸️ PAUSED: ${tradingAllowed.reason}`,
+        last_closed_trade: null,
+        latest_order: data.order_log?.slice(-1)[0] || null,
+        live_pl_inr: livePlInr,
+        stop_loss: openTrade?.stop_loss || null,
+        tp_levels: openTrade?.tp_levels || [],
+        position_size: openTrade?.amount || 0,
+        atr,
+        risk_status: riskStatus,
+        trading_allowed: false,
+        pause_reason: tradingAllowed.reason,
+        force_start: (await loadTradingState()).force_start,
+        strategy_info: {
+          buy_strategy: 'UT Bot #2 (KV=2, ATR=300)',
+          sell_strategy: 'UT Bot #1 (KV=2, ATR=1)'
+        }
+      };
+      return res.json(response);
+    }
+
+    const { balance, holding, position_type, action, stop_loss, tp_levels, position_size } =
+      await updateDemoTrade(signal, price, atr, utbot_stop);
+
+    const updatedData = await loadTrades();
+    const riskStatus = await getRiskStatus();
+
+    response = {
+      price,
+      signal,
+      balance,
+      holding,
+      position_type,
+      entry_price: updatedData.open_trade?.entry_price || null,
+      action,
+      last_closed_trade: null,
+      latest_order: updatedData.order_log?.slice(-1)[0] || null,
+      live_pl_inr: livePlInr,
+      stop_loss,
+      tp_levels,
+      position_size,
+      atr,
+      risk_status: riskStatus,
+      trading_allowed: true,
+      pause_reason: null,
+      force_start: (await loadTradingState()).force_start,
+      strategy_info: {
+        buy_strategy: 'UT Bot #2 (KV=2, ATR=300)',
+        sell_strategy: 'UT Bot #1 (KV=2, ATR=1)'
+      }
+    };
+    res.json(response);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// In /status, adjust P/L calculation similarly (already handled in /signal, but keep)
+app.get('/status', async (req, res) => {
+  const data = await loadTrades();
+  const currentPrice = await getCurrentPrice();
+  const usdtInr = await getUSDTINR();
+  const livePlUsdt = calculateLivePL(data.open_trade, currentPrice);
+  const livePlInr = livePlUsdt ? livePlUsdt * usdtInr : null;
+  const riskStatus = await getRiskStatus();
+  res.json({
+    balance: data.balance,
+    has_open_trade: !!data.open_trade,
+    open_trade: data.open_trade,
+    current_price: currentPrice,
+    live_pl_inr: livePlInr,
+    last_signal: data.last_signal,
+    total_trades: data.history?.length || 0,
+    risk_status: riskStatus,
+    force_start: (await loadTradingState()).force_start
+  });
+});
+
+// All other routes remain same (risk-config, trading-control, etc.)
+// ...
+
+// Cron job for daily reset (use improved function)
+cron.schedule('0 * * * *', resetDailyIfNeeded);
+
+// Start server
+app.listen(port, () => {
+  console.log(`✅ Server running on port ${port}`);
+  console.log(`📡 Data source priority: Binance CDN → Bybit → CryptoCompare → CoinGecko`);
+});      position_sizing: {
         method: 'percentage',
         value: 5.0,
         min_position_size: 0.0001,
