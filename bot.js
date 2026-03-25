@@ -1,7 +1,8 @@
 // bot.js – UT Bot Trading System with Risk Management (Node.js + Upstash Redis REST)
-// ✅ FIXED: Binance 451 geo-block issue with multi-proxy fallback + CryptoCompare kline fallback
-// ✅ FIXED: Syntax error – all braces properly closed
-// ✅ ADDED: Cooldown after trade – wait for next signal before re-entering
+// ✅ Fixed: Binance 451 geo-block with multi-proxy fallback + CryptoCompare kline fallback
+// ✅ Added: Cooldown after trade – wait for next signal before re-entering
+// ✅ Fixed: Daily limits reset at midnight IST (Asia/Kolkata) using date string comparison
+// ✅ Added: USDT/INR rate management, export history, clear all trades
 
 require('dotenv').config();
 const express = require('express');
@@ -57,7 +58,7 @@ async function loadTrades() {
       history: [],
       order_log: [],
       last_signal: null,
-      last_closed_signal: null   // NEW: stores the signal that caused the last close
+      last_closed_signal: null   // Stores signal of last closed trade (Buy or Sell)
     };
     await redis.set(TRADES_KEY, JSON.stringify(defaultData));
     return defaultData;
@@ -69,6 +70,9 @@ async function saveTrades(data) {
   await redis.set(TRADES_KEY, JSON.stringify(data));
 }
 
+// ------------------------------
+// Risk State Management with IST date reset
+// ------------------------------
 async function loadRiskState() {
   const data = await redis.get(RISK_STATE_KEY);
   if (!data) return resetRiskState();
@@ -98,7 +102,7 @@ async function resetRiskState() {
     daily_profit: 0,
     daily_trades: 0,
     consecutive_losses: 0,
-    last_reset: todayStr,      // store as date string
+    last_reset: todayStr,
     peak_balance: START_BALANCE
   };
   await saveRiskState(state);
@@ -424,7 +428,7 @@ async function getUTBotSignal() {
 }
 
 // ------------------------------
-// Risk Management Functions (unchanged except for dynamic USDT/INR)
+// Risk Management Functions
 // ------------------------------
 async function calculatePositionSize(balance) {
   const config = await loadRiskConfig();
@@ -636,7 +640,7 @@ async function updateDemoTrade(signal, price, atrValue, utbotStop) {
     quantity: COINS_PER_TRADE
   };
 
-  // --- Check for stop-loss / take-profit hit ---
+  // Check for stop-loss / take-profit hit
   if (openTrade) {
     const hitType = (() => {
       const posType = openTrade.type;
@@ -653,7 +657,6 @@ async function updateDemoTrade(signal, price, atrValue, utbotStop) {
       logEntry.action = 'STOP_LOSS';
       logEntry.pl_inr = lastClosedTrade.profit_inr;
       openTrade = null;
-      // Store the signal that caused the close (the side that was open)
       data.last_closed_signal = lastClosedTrade.type === 'LONG' ? 'Buy' : 'Sell';
     } else if (hitType === 'TP1') {
       lastClosedTrade = await closeFullPosition(data, openTrade, price, 'TP1 Hit - Full Exit');
@@ -672,7 +675,7 @@ async function updateDemoTrade(signal, price, atrValue, utbotStop) {
     }
   }
 
-  // --- New trade logic with cooldown ---
+  // New trade logic with cooldown
   if (signal === 'Hold') {
     if (!actionMessage) {
       actionMessage = 'Holding position. Waiting for next signal.';
@@ -825,6 +828,32 @@ async function isTradingAllowed() {
   }
   return { allowed: true, reason: null };
 }
+
+// ------------------------------
+// Daily reset cron job (fixed)
+// ------------------------------
+async function resetDailyIfNeeded() {
+  const config = await loadRiskConfig();
+  const state = await loadRiskState();
+  const resetHour = config.daily_limits.reset_hour; // 0 = midnight
+
+  // Get current date in IST
+  const nowIST = new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
+  const now = new Date(nowIST);
+  const todayStr = now.toISOString().split('T')[0];
+
+  // If last_reset is not today, reset
+  if (state.last_reset !== todayStr) {
+    await resetRiskState();
+    console.log(`🔄 Daily risk state reset at ${now.toISOString()} (IST midnight)`);
+  }
+}
+
+// Schedule to run every hour
+cron.schedule('0 * * * *', resetDailyIfNeeded);
+
+// Optional: reset on server start
+resetDailyIfNeeded().catch(console.error);
 
 // ------------------------------
 // Express Routes
@@ -1055,7 +1084,7 @@ app.post('/trading-control', async (req, res) => {
   }
 });
 
-// New endpoints for USDT/INR, export, clear
+// New endpoints
 app.get('/usdt-inr-rate', async (req, res) => {
   const rate = await getUSDTINR();
   res.json({ rate });
@@ -1137,25 +1166,6 @@ async function getRiskStatus() {
     config
   };
 }
-
-// Cron job: reset daily risk state based on IST midnight
-async function resetDailyIfNeeded() {
-  const config = await loadRiskConfig();
-  const state = await loadRiskState();
-  const resetHour = config.daily_limits.reset_hour; // 0 = midnight
-
-  // Get current date in IST
-  const nowIST = new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
-  const now = new Date(nowIST);
-  const todayStr = now.toISOString().split('T')[0];
-
-  // If last_reset is not today, reset
-  if (state.last_reset !== todayStr) {
-    await resetRiskState();
-    console.log(`🔄 Daily risk state reset at ${now.toISOString()} (IST midnight)`);
-  }
-}
-
 
 // Start server
 app.listen(port, () => {
