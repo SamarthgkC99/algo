@@ -546,14 +546,21 @@ async function loadPositionMethod() {
     document.getElementById('inp-lot').value = cfg.position_sizing.value;
 
     const riskContainer = document.getElementById('risk-amt-container');
-    const lotContainer = document.getElementById('lot-container');
+    const lotContainer  = document.getElementById('lot-container');
     riskContainer.style.display = method === 'risk_fixed' ? 'block' : 'none';
-    lotContainer.style.display = method === 'fixed' ? 'block' : 'none';
+    lotContainer.style.display  = method === 'fixed'      ? 'block' : 'none';
+
+    // ✅ Fixed: sync manualLot from server so page refresh doesn't cause UI/backend mismatch
+    if (method === 'fixed') {
+      manualLot = cfg.position_sizing.value;
+    } else {
+      manualLot = null;
+    }
 
     let statusText = '';
-    if (method === 'percentage') statusText = '⬤ Percentage of balance (5%)';
-    else if (method === 'fixed') statusText = `⬤ Fixed lot: ${cfg.position_sizing.value} BTC`;
-    else statusText = `⬤ Risk per trade: ₹${cfg.position_sizing.risk_amount}`;
+    if (method === 'percentage')  statusText = `⬤ Percentage of balance (5%)`;
+    else if (method === 'fixed')  statusText = `⬤ Fixed lot: ${cfg.position_sizing.value} BTC`;
+    else                          statusText = `⬤ Risk per trade: ₹${cfg.position_sizing.risk_amount}`;
     setSt('st-pos', 'dim', statusText);
   } catch(e) { console.error('loadPositionMethod:', e); }
 }
@@ -798,8 +805,11 @@ async function fetchAndUpdate() {
     if (d.atr) { lastATR = d.atr; if (currentRR !== 'none') updateRRPreview(); }
     document.getElementById('price').textContent = '$' + d.price.toFixed(2);
     const sigEl = document.getElementById('signal');
-    sigEl.textContent = d.signal || 'Hold';
-    sigEl.className = 'signal-badge ' + (d.signal||'hold').toLowerCase();
+    const sigVal = d.signal || 'Hold';
+    sigEl.textContent = sigVal;
+    // ✅ Fixed: safe class mapping — unknown signals fall back to 'hold'
+    const sigClass = { 'Buy': 'buy', 'Sell': 'sell', 'Hold': 'hold' }[sigVal] || 'hold';
+    sigEl.className = 'signal-badge ' + sigClass;
     document.getElementById('action-msg').textContent = (!d.trading_allowed && d.pause_reason) ? '⏸ ' + d.pause_reason : (d.action || '');
     document.getElementById('balance').textContent = '₹' + Number(d.balance||0).toLocaleString('en-IN',{maximumFractionDigits:2});
     document.getElementById('position').textContent = d.position_type || 'NONE';
@@ -848,11 +858,11 @@ async function fetchAndUpdate() {
       while (ol.children.length > 12) ol.removeChild(ol.lastChild);
     }
 
-    // Update cooldown display
+    // ✅ Fixed: cooldown object now always returned from backend
     const cdDiv = document.getElementById('cooldown-status');
-    if (d.cooldown && d.cooldown.active) {
+    if (d.cooldown && d.cooldown.active && d.cooldown.message) {
       cdDiv.style.display = 'block';
-      cdDiv.innerHTML = `⏳ ${d.cooldown.message || 'Cooldown active'}`;
+      cdDiv.innerHTML = d.cooldown.message;
     } else {
       cdDiv.style.display = 'none';
     }
@@ -890,6 +900,14 @@ async function fetchHistory() {
       tp.className = 'type-pill ' + (t.type==='LONG' ? 'type-long' : 'type-short');
       tp.textContent = t.type || '?';
       tc.appendChild(tp);
+      // ✅ Show partial badge for partial closes
+      if (t.partial) {
+        const pb = document.createElement('span');
+        pb.className = 'override-badge';
+        pb.style.background = 'var(--accent-blue)';
+        pb.textContent = 'PARTIAL';
+        tc.appendChild(pb);
+      }
       row.insertCell().textContent = '$' + Number(t.entry_price).toFixed(2);
       const slc = row.insertCell();
       slc.textContent = t.stop_loss ? '$'+Number(t.stop_loss).toFixed(2) : '—';
@@ -973,13 +991,19 @@ function buildChart(data) {
   const ctx = document.getElementById('priceChart').getContext('2d');
   const cs = data.candles.slice(-100).map(c=>({ x:c.time*1000, o:c.open, h:c.high, l:c.low, c:c.close }));
   const sl = data.stop_line.slice(-100).map(s=>({ x:s.time*1000, y:s.value }));
+
+  // ✅ Fixed: update chart data in place instead of destroying and recreating
+  // This preserves user drawings (hlines, trendlines, projections) across refreshes
   if (chartInstance) {
-    chartInstance.canvas.removeEventListener('mousedown', onMD);
-    chartInstance.canvas.removeEventListener('mousemove', onMM);
-    chartInstance.canvas.removeEventListener('mouseup', onMU);
-    chartInstance.canvas.removeEventListener('mouseleave', onMU);
-    chartInstance.destroy();
+    chartInstance.data.datasets[0].data = cs;
+    chartInstance.data.datasets[1].data = sl;
+    chartInstance.update('none'); // 'none' = no animation, fastest update
+    // Re-apply trade lines since x-scale may have shifted
+    if (currentTradeLines) updateTradeLinesOnChart(currentTradeLines);
+    return;
   }
+
+  // First build only
   chartInstance = new Chart(ctx, {
     type: 'candlestick',
     data: { datasets: [
@@ -1009,6 +1033,7 @@ function buildChart(data) {
       }
     }
   });
+  // Attach listeners only on first build
   chartInstance.canvas.addEventListener('mousedown', onMD);
   chartInstance.canvas.addEventListener('mousemove', onMM);
   chartInstance.canvas.addEventListener('mouseup', onMU);
