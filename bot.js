@@ -60,7 +60,11 @@ async function loadTrades() {
       history: [],
       order_log: [],
       last_signal: null,
-      cooldown: null
+      // Cooldown fields
+      last_closed_time: null,
+      last_closed_side: null,
+      pending_opposite_side: null,
+      pending_opposite_time: null
     };
     await redis.set(TRADES_KEY, JSON.stringify(defaultData));
     return defaultData;
@@ -80,9 +84,11 @@ async function loadRiskState() {
   if (!data) return resetRiskState();
   let state = typeof data === 'string' ? JSON.parse(data) : data;
 
-  // Migrate old number format to date string
+  // If last_reset is a number (old format), convert to date string
   if (typeof state.last_reset === 'number') {
-    state.last_reset = getTodayIST();
+    const date = new Date(state.last_reset);
+    const istDate = date.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
+    state.last_reset = new Date(istDate).toISOString().split('T')[0];
     await saveRiskState(state);
   }
   return state;
@@ -93,11 +99,15 @@ async function saveRiskState(state) {
 }
 
 async function resetRiskState() {
+  // Get current date in IST (YYYY-MM-DD)
+  const nowIST = new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
+  const todayStr = new Date(nowIST).toISOString().split('T')[0];
+
   const state = {
     daily_loss: 0,
     daily_profit: 0,
     daily_trades: 0,
-    last_reset: getTodayIST(),
+    last_reset: todayStr,
     peak_balance: START_BALANCE
   };
   await saveRiskState(state);
@@ -348,51 +358,35 @@ async function getKlines(symbol = 'BTCUSDT', interval = '5m', limit = 350) {
 // ------------------------------
 function calcUtbot(klines, keyvalue, atrPeriod) {
   const close = klines.map(k => parseFloat(k[4]));
-  const high  = klines.map(k => parseFloat(k[2]));
-  const low   = klines.map(k => parseFloat(k[3]));
-
-  // True Range
+  const high = klines.map(k => parseFloat(k[2]));
+  const low = klines.map(k => parseFloat(k[3]));
   const tr = [];
   for (let i = 0; i < high.length; i++) {
-    if (i === 0) { tr.push(high[i] - low[i]); continue; }
-    const hl = high[i] - low[i];
-    const hc = Math.abs(high[i] - close[i-1]);
-    const lc = Math.abs(low[i] - close[i-1]);
-    tr.push(Math.max(hl, hc, lc));
-  }
-
-  // RMA (Wilder's smoothing) — matches TradingView Pine Script
-  const alpha = 1 / atrPeriod;
-  const atr = new Array(tr.length).fill(null);
-  // Seed with simple average of first `atrPeriod` values
-  if (tr.length >= atrPeriod) {
-    let seed = 0;
-    for (let i = 0; i < atrPeriod; i++) seed += tr[i];
-    atr[atrPeriod - 1] = seed / atrPeriod;
-    for (let i = atrPeriod; i < tr.length; i++) {
-      atr[i] = alpha * tr[i] + (1 - alpha) * atr[i-1];
+    if (i === 0) tr.push(high[i] - low[i]);
+    else {
+      const hl = high[i] - low[i];
+      const hc = Math.abs(high[i] - close[i-1]);
+      const lc = Math.abs(low[i] - close[i-1]);
+      tr.push(Math.max(hl, hc, lc));
     }
   }
-
-  const nLoss = atr.map(a => (a === null ? null : keyvalue * a));
-
-  // xATRTrailingStop — use first valid nLoss as initial stop
-  const firstValid = nLoss.findIndex(v => v !== null);
-  const xATRTrailingStop = new Array(close.length).fill(close[0]);
-  const pos = new Array(close.length).fill(0);
-
+  const atr = [];
+  for (let i = 0; i < tr.length; i++) {
+    if (i < atrPeriod - 1) atr.push(null);
+    else {
+      let sum = 0;
+      for (let j = i - atrPeriod + 1; j <= i; j++) sum += tr[j];
+      atr.push(sum / atrPeriod);
+    }
+  }
+  const nLoss = atr.map(a => a === null ? null : keyvalue * a);
+  const xATRTrailingStop = [close[0]];
+  const pos = [0];
   for (let i = 1; i < close.length; i++) {
-    const src  = close[i];
+    const src = close[i];
     const src1 = close[i-1];
     const prevStop = xATRTrailingStop[i-1];
     const nl = nLoss[i];
-
-    if (nl === null) {
-      xATRTrailingStop[i] = prevStop;
-      pos[i] = pos[i-1];
-      continue;
-    }
-
     let newStop;
     if (src > prevStop && src1 > prevStop) {
       newStop = Math.max(prevStop, src - nl);
@@ -401,13 +395,13 @@ function calcUtbot(klines, keyvalue, atrPeriod) {
     } else {
       newStop = src > prevStop ? src - nl : src + nl;
     }
-    xATRTrailingStop[i] = newStop;
-
-    if (src1 < prevStop && src > prevStop)      pos[i] = 1;
-    else if (src1 > prevStop && src < prevStop) pos[i] = -1;
-    else                                         pos[i] = pos[i-1];
+    xATRTrailingStop.push(newStop);
+    let newPos;
+    if (src1 < prevStop && src > prevStop) newPos = 1;
+    else if (src1 > prevStop && src < prevStop) newPos = -1;
+    else newPos = pos[i-1];
+    pos.push(newPos);
   }
-
   return { stop: xATRTrailingStop, pos, atr };
 }
 
@@ -418,38 +412,23 @@ async function getUTBotSignal() {
     return { signal: 'No Data', price: 0, atr: 0, utbot_stop: 0 };
   }
   const price = parseFloat(klines[klines.length-1][4]);
-
-  // UT Bot #2 — KV=2, ATR=300 → drives BUY signals
-  const df2 = calcUtbot(klines, 2, 300);
-  // UT Bot #1 — KV=2, ATR=1   → drives SELL signals
   const df1 = calcUtbot(klines, 2, 1);
-
-  const signal2 = df2.pos[df2.pos.length-1];
+  const df2 = calcUtbot(klines, 2, 300);
   const signal1 = df1.pos[df1.pos.length-1];
-  const stop2   = df2.stop[df2.stop.length-1];
-  const stop1   = df1.stop[df1.stop.length-1];
-
-  // Use ATR-14 (standard, RMA) for SL/TP — tight and responsive
-  const df14 = calcUtbot(klines, 1, 14); // keyvalue=1 so nLoss=atr; we only need the atr array
-  let atr = 0;
-  for (let i = df14.atr.length - 1; i >= 0; i--) {
-    if (df14.atr[i] !== null) { atr = df14.atr[i]; break; }
-  }
-
+  const signal2 = df2.pos[df2.pos.length-1];
+  const stop1 = df1.stop[df1.stop.length-1];
+  const stop2 = df2.stop[df2.stop.length-1];
+  const atr = df1.atr[df1.atr.length-1] || 0;
   let signal = 'Hold';
   let utbotStop = null;
-
-  // Buy: UT Bot #2 (slow, ATR=300) crosses UP
   if (signal2 === 1) {
     signal = 'Buy';
     utbotStop = stop2;
   }
-  // Sell: UT Bot #1 (fast, ATR=1) crosses DOWN — overrides buy
   if (signal1 === -1) {
     signal = 'Sell';
     utbotStop = stop1;
   }
-
   return { signal, price, atr, utbot_stop: utbotStop || price };
 }
 
@@ -495,57 +474,52 @@ async function calculatePositionSize(balance, entryPrice, type, stopLoss, atr, c
 function calculateStopLoss(entry, type, atr, utbotStop, config) {
   const slConf = config.stop_loss;
   if (!slConf.enabled) return null;
-
-  // Primary: UT Bot stop line (natural signal level)
-  // Fallback: ATR-14 × 1.5 if utbotStop is missing or too far
-  const atrStop = type === 'LONG'
-    ? entry - atr * 1.5
-    : entry + atr * 1.5;
-
-  // Hard cap: max 2% loss from entry (protects against crazy wide stops)
-  const hardCap = type === 'LONG'
-    ? entry * 0.98
-    : entry * 1.02;
-
+  let atrStop = type === 'LONG'
+    ? entry - atr * slConf.atr_multiplier
+    : entry + atr * slConf.atr_multiplier;
+  let fixedStop = type === 'LONG'
+    ? entry * (1 - slConf.max_loss_percentage / 100)
+    : entry * (1 + slConf.max_loss_percentage / 100);
   let stop;
-  if (utbotStop) {
-    // Use utbot stop, but never wider than the hard cap
-    stop = type === 'LONG'
-      ? Math.max(utbotStop, hardCap)   // highest of utbot/cap (closest to entry)
-      : Math.min(utbotStop, hardCap);  // lowest of utbot/cap
-  } else {
-    // No utbot stop: use ATR-1.5x, bounded by hard cap
-    stop = type === 'LONG'
-      ? Math.max(atrStop, hardCap)
-      : Math.min(atrStop, hardCap);
+  switch (slConf.type) {
+    case 'atr': stop = atrStop; break;
+    case 'percentage': stop = fixedStop; break;
+    case 'utbot': stop = utbotStop || fixedStop; break;
+    default: // hybrid
+      stop = type === 'LONG'
+        ? Math.max(atrStop, fixedStop)
+        : Math.min(atrStop, fixedStop);
+      if (utbotStop) {
+        stop = type === 'LONG'
+          ? Math.max(stop, utbotStop)
+          : Math.min(stop, utbotStop);
+      }
   }
-
   return parseFloat(stop.toFixed(2));
 }
 
 function calculateTakeProfitLevels(entry, type, atr, config) {
   const tpConf = config.take_profit;
   if (!tpConf.enabled) return [];
-
-  // TP multipliers based on ATR-14:
-  // LONG:  TP1 = entry + ATR×2   (~1:1.3 RR with 1.5× SL) — conservative, reliable
-  // SHORT: TP1 = entry - ATR×1.5 (~1:1 RR with 1.5× SL)  — shorts are faster, take quicker
-  const multipliers = type === 'LONG'
-    ? [2.0, 3.5, 5.0]
-    : [1.5, 2.5, 4.0];
-
   const levels = [];
-  const pcts = [100, 0, 0]; // Only TP1 (100%) used for full exit; TP2/TP3 shown for info only
-  const names = ['TP1', 'TP2', 'TP3'];
-
+  let multipliers = [];
+  if (config.different_rules_for_position_type.enabled) {
+    multipliers = type === 'LONG'
+      ? config.different_rules_for_position_type.long.tp_atr_multipliers
+      : config.different_rules_for_position_type.short.tp_atr_multipliers;
+  } else {
+    multipliers = tpConf.levels.map(l => l.atr_multiplier);
+  }
   for (let i = 0; i < multipliers.length; i++) {
+    const mult = multipliers[i];
     const price = type === 'LONG'
-      ? entry + atr * multipliers[i]
-      : entry - atr * multipliers[i];
+      ? entry + atr * mult
+      : entry - atr * mult;
+    const levelInfo = tpConf.levels[i] || { percentage: 100 / multipliers.length, name: `TP${i+1}` };
     levels.push({
       price: parseFloat(price.toFixed(2)),
-      percentage: pcts[i],
-      name: names[i],
+      percentage: levelInfo.percentage,
+      name: levelInfo.name,
       hit: false
     });
   }
@@ -620,69 +594,7 @@ async function recordTradeResult(profitLoss) {
 }
 
 // ------------------------------
-// Candle-based Cooldown Helpers (5m candles = 300s each)
-// ------------------------------
-const CANDLE_MS = 5 * 60 * 1000; // 5 minutes in ms
-
-// Returns the candle index (epoch / 5min) for a given timestamp
-function candleIndex(tsMs) {
-  return Math.floor(tsMs / CANDLE_MS);
-}
-
-// How many full candles have closed since tsMs
-function candlesSince(tsMs) {
-  return candleIndex(Date.now()) - candleIndex(tsMs);
-}
-
-// Cooldown rules (in candles):
-// SL hit     → same-side: 2 candles (10 min), opposite-side: 1 candle (5 min)
-// TP hit     → same-side: 3 candles (15 min), opposite: open immediately
-// Flip close → no cooldown (signal already confirmed)
-const COOLDOWN_RULES = {
-  SL:   { same: 2, opposite: 1 },
-  TP1:  { same: 3, opposite: 0 },
-  FLIP: { same: 0, opposite: 0 }
-};
-
-function getCooldownStatus(data, signal) {
-  if (!data.cooldown || !data.cooldown.close_reason) return { canOpen: true };
-
-  const rules = COOLDOWN_RULES[data.cooldown.close_reason] || { same: 1, opposite: 1 };
-  const isSameSide = data.cooldown.closed_side === signal;
-  const requiredCandles = isSameSide ? rules.same : rules.opposite;
-
-  if (requiredCandles === 0) return { canOpen: true };
-
-  const elapsed = candlesSince(data.cooldown.closed_at_ms);
-  if (elapsed >= requiredCandles) return { canOpen: true };
-
-  const remaining = requiredCandles - elapsed;
-  const sideLabel = isSameSide ? 'same-side' : 'opposite';
-  return {
-    canOpen: false,
-    message: `⏳ Cooldown (${sideLabel}, ${data.cooldown.close_reason}): ${remaining} candle${remaining > 1 ? 's' : ''} remaining (~${remaining * 5}min)`
-  };
-}
-
-function setCooldown(data, side, reason) {
-  data.cooldown = {
-    closed_side: side,
-    close_reason: reason,   // 'SL', 'TP1', or 'FLIP'
-    closed_at_ms: Date.now()
-  };
-  // Clear old fields
-  data.last_closed_time = null;
-  data.last_closed_side = null;
-  data.pending_opposite_side = null;
-  data.pending_opposite_time = null;
-}
-
-function clearCooldown(data) {
-  data.cooldown = null;
-}
-
-// ------------------------------
-// Demo Trader Logic
+// Demo Trader Logic with refined cooldown
 // ------------------------------
 function calculateLivePL(openTrade, currentPrice) {
   if (!openTrade) return null;
@@ -739,6 +651,7 @@ async function updateDemoTrade(signal, price, atrValue, utbotStop) {
   const config = await loadRiskConfig();
   let openTrade = data.open_trade;
   let actionMessage = '';
+  let lastClosedInfo = null;
 
   const logEntry = {
     time: new Date().toISOString(),
@@ -747,93 +660,144 @@ async function updateDemoTrade(signal, price, atrValue, utbotStop) {
     quantity: COINS_PER_TRADE
   };
 
-  // --- Check SL / TP1 hit on open trade ---
+  // --- Check for stop-loss / take-profit hit ---
   if (openTrade) {
-    const posType = openTrade.type;
-    const sl  = openTrade.stop_loss;
-    const tp1 = openTrade.tp1_price;
-    const slHit  = sl  && ((posType === 'LONG' && price <= sl)  || (posType === 'SHORT' && price >= sl));
-    const tp1Hit = tp1 && ((posType === 'LONG' && price >= tp1) || (posType === 'SHORT' && price <= tp1));
+    const hitType = (() => {
+      const posType = openTrade.type;
+      const sl = openTrade.stop_loss;
+      const tp1 = openTrade.tp1_price;
+      if (sl && ((posType === 'LONG' && price <= sl) || (posType === 'SHORT' && price >= sl))) return 'SL';
+      if (tp1 && ((posType === 'LONG' && price >= tp1) || (posType === 'SHORT' && price <= tp1))) return 'TP1';
+      return null;
+    })();
 
-    if (slHit) {
+    if (hitType === 'SL') {
       const { tradeRecord, side } = await closeFullPosition(data, openTrade, price, 'Stop-Loss Hit');
-      actionMessage = `🛑 SL HIT @ $${price.toFixed(2)} | P/L: ₹${tradeRecord.profit_inr.toFixed(2)}`;
+      actionMessage = `🛑 STOP-LOSS HIT @ $${price.toFixed(2)} | P/L: ₹${tradeRecord.profit_inr.toFixed(2)}`;
       logEntry.action = 'STOP_LOSS';
       logEntry.pl_inr = tradeRecord.profit_inr;
       openTrade = null;
-      setCooldown(data, side, 'SL');
-
-    } else if (tp1Hit) {
-      const { tradeRecord, side } = await closeFullPosition(data, openTrade, price, 'TP1 Hit');
-      actionMessage = `✅ TP1 HIT @ $${price.toFixed(2)} | P/L: ₹${tradeRecord.profit_inr.toFixed(2)}`;
+      // Set cooldown after close
+      data.last_closed_time = Date.now();
+      data.last_closed_side = side;
+      data.pending_opposite_side = null;
+      data.pending_opposite_time = null;
+      lastClosedInfo = { side, time: data.last_closed_time };
+    } else if (hitType === 'TP1') {
+      const { tradeRecord, side } = await closeFullPosition(data, openTrade, price, 'TP1 Hit - Full Exit');
+      actionMessage = `✅ TP1 HIT @ $${price.toFixed(2)} | FULL EXIT | P/L: ₹${tradeRecord.profit_inr.toFixed(2)}`;
       logEntry.action = 'TP1_FULL_EXIT';
       logEntry.pl_inr = tradeRecord.profit_inr;
       openTrade = null;
-      setCooldown(data, side, 'TP1');
-
-    } else {
-      // Breakeven: move SL to entry when price reaches TP1
-      if (!openTrade.breakeven_moved && openTrade.tp1_price) {
-        const atTp1 = (posType === 'LONG' && price >= openTrade.tp1_price) ||
-                      (posType === 'SHORT' && price <= openTrade.tp1_price);
-        if (atTp1) {
-          openTrade.stop_loss = openTrade.entry_price;
-          openTrade.breakeven_moved = true;
-          actionMessage = `📍 Breakeven moved to $${openTrade.entry_price.toFixed(2)}`;
-          logEntry.action = 'BREAKEVEN_MOVED';
-        }
-      }
-      // Trailing stop (only after breakeven)
-      if (openTrade.breakeven_moved && config.stop_loss.trailing_enabled) {
-        const newStop = updateTrailingStop(price, posType, openTrade.stop_loss, atrValue, config);
-        if (newStop) {
-          openTrade.stop_loss = newStop;
-          if (!actionMessage) {
-            actionMessage = `📈 Trailing stop → $${newStop.toFixed(2)}`;
-            logEntry.action = 'TRAILING_STOP_UPDATE';
-          }
-        }
+      data.last_closed_time = Date.now();
+      data.last_closed_side = side;
+      data.pending_opposite_side = null;
+      data.pending_opposite_time = null;
+      lastClosedInfo = { side, time: data.last_closed_time };
+    } else if (openTrade && openTrade.breakeven_moved && config.stop_loss.trailing_enabled) {
+      const newStop = updateTrailingStop(price, openTrade.type, openTrade.stop_loss, atrValue, config);
+      if (newStop) {
+        openTrade.stop_loss = newStop;
+        actionMessage = `📈 Trailing stop updated to $${newStop.toFixed(2)}`;
+        logEntry.action = 'TRAILING_STOP_UPDATE';
       }
     }
   }
 
-  // --- Signal handling ---
+  // --- New trade logic with refined cooldown ---
   if (signal === 'Hold') {
     if (!actionMessage) {
-      actionMessage = openTrade
-        ? `Holding ${openTrade.type} position.`
-        : 'No position. Waiting for signal.';
+      actionMessage = 'Holding position. Waiting for next signal.';
       logEntry.action = 'HOLD';
     }
-
-  } else if (!openTrade) {
-    // No open trade — check risk limits and cooldown before opening
+    // Also, if there's a pending opposite signal and the signal is Hold, we should clear pending (since no signal to confirm)
+    if (data.pending_opposite_side) {
+      data.pending_opposite_side = null;
+      data.pending_opposite_time = null;
+    }
+  } else {
     const canTrade = await canOpenTrade(data.balance);
     if (!canTrade.allowed) {
       actionMessage = `⚠️ Cannot open ${signal}: ${canTrade.reason}`;
       logEntry.action = 'BLOCKED';
+    } else if (openTrade && openTrade.type === (signal === 'Buy' ? 'LONG' : 'SHORT')) {
+      actionMessage = `Ignoring repeated "${signal}" signal. Already in ${signal === 'Buy' ? 'LONG' : 'SHORT'} position.`;
+      logEntry.action = 'IGNORED';
     } else {
-      const cd = getCooldownStatus(data, signal);
-      if (!cd.canOpen) {
-        actionMessage = cd.message;
-        logEntry.action = 'COOLDOWN';
+      // If there's an opposite position, close it first (this will also set cooldown)
+      if (openTrade) {
+        const oppositeSide = openTrade.type === 'LONG' ? 'Sell' : 'Buy';
+        if (oppositeSide === signal) {
+          const { tradeRecord, side } = await closeFullPosition(data, openTrade, price, 'Opposite Signal');
+          actionMessage = `CLOSED ${openTrade.type === 'LONG' ? 'LONG' : 'SHORT'} @ $${price.toFixed(2)}, P/L: ₹${tradeRecord.profit_inr.toFixed(2)}. | `;
+          logEntry.action = `CLOSE_${openTrade.type === 'LONG' ? 'LONG' : 'SHORT'}`;
+          openTrade = null;
+          data.last_closed_time = Date.now();
+          data.last_closed_side = side;
+          data.pending_opposite_side = null;
+          data.pending_opposite_time = null;
+          lastClosedInfo = { side, time: data.last_closed_time };
+        }
+      }
+
+      // Now handle opening new trade with cooldown
+      const now = Date.now();
+      let canOpen = false;
+      let cooldownReason = null;
+
+      if (!data.last_closed_side) {
+        // No previous close, open immediately
+        canOpen = true;
       } else {
-        // Open new trade
-        clearCooldown(data);
-        const type = signal === 'Buy' ? 'LONG' : 'SHORT';
-        const stopLoss    = calculateStopLoss(price, type, atrValue, utbotStop, config);
-        const positionSize = await calculatePositionSize(data.balance, price, type, stopLoss, atrValue, config);
-        const tpLevels    = calculateTakeProfitLevels(price, type, atrValue, config);
-        const tp1Price    = tpLevels[0]?.price || null;
+        const sameSide = (data.last_closed_side === signal);
+        if (sameSide) {
+          // Same side: block if within 250s
+          if (now - data.last_closed_time < 250000) {
+            const remaining = Math.ceil((250000 - (now - data.last_closed_time)) / 1000);
+            cooldownReason = `⏳ Same-side cooldown active for ${signal} (${remaining}s remaining).`;
+          } else {
+            canOpen = true;
+          }
+        } else {
+          // Opposite side: use confirmation timer
+          if (data.pending_opposite_side === signal) {
+            // Already pending this side
+            if (now - data.pending_opposite_time >= 50000) {
+              canOpen = true;
+            } else {
+              const remaining = Math.ceil((50000 - (now - data.pending_opposite_time)) / 1000);
+              cooldownReason = `⏳ Opposite confirmation in progress for ${signal} (${remaining}s remaining).`;
+            }
+          } else {
+            // New opposite signal: start pending timer
+            data.pending_opposite_side = signal;
+            data.pending_opposite_time = now;
+            cooldownReason = `⏳ New opposite signal ${signal} detected. Waiting 50s for confirmation.`;
+          }
+        }
+      }
+
+      if (canOpen) {
+        // Clear cooldown state after opening
+        data.last_closed_side = null;
+        data.last_closed_time = null;
+        data.pending_opposite_side = null;
+        data.pending_opposite_time = null;
+
+        // Calculate stop loss and position size
+        const stopLoss = calculateStopLoss(price, signal === 'Buy' ? 'LONG' : 'SHORT', atrValue, utbotStop, config);
+        const positionSize = await calculatePositionSize(data.balance, price, signal === 'Buy' ? 'LONG' : 'SHORT', stopLoss, atrValue, config);
+        const tpLevels = calculateTakeProfitLevels(price, signal === 'Buy' ? 'LONG' : 'SHORT', atrValue, config);
+        const tp1Price = tpLevels[0]?.price || null;
 
         openTrade = {
-          type,
+          type: signal === 'Buy' ? 'LONG' : 'SHORT',
           entry_price: price,
           amount: positionSize,
           original_amount: positionSize,
           stop_loss: stopLoss,
           tp1_price: tp1Price,
-          tp_levels: tpLevels,
+          tp_levels: tpLevels.slice(0,1),
           opened_at: new Date().toISOString(),
           strategy: signal === 'Buy' ? 'UT Bot #2 (KV=2, ATR=300)' : 'UT Bot #1 (KV=2, ATR=1)',
           atr_at_entry: atrValue,
@@ -845,56 +809,11 @@ async function updateDemoTrade(signal, price, atrValue, utbotStop) {
         logEntry.stop_loss = stopLoss;
         logEntry.tp1 = tp1Price;
         data.last_signal = signal;
-      }
-    }
-
-  } else {
-    // Trade is open — check if signal is a flip
-    const isFlip = (openTrade.type === 'LONG' && signal === 'Sell') ||
-                   (openTrade.type === 'SHORT' && signal === 'Buy');
-
-    if (!isFlip) {
-      // Same direction as open trade — ignore
-      actionMessage = `Holding ${openTrade.type}. Ignoring repeated ${signal} signal.`;
-      logEntry.action = 'IGNORED';
-    } else {
-      // Close current position and immediately open opposite (no cooldown on flip)
-      const { tradeRecord, side } = await closeFullPosition(data, openTrade, price, 'Signal Flip');
-      actionMessage = `🔄 FLIP: Closed ${openTrade.type} @ $${price.toFixed(2)}, P/L: ₹${tradeRecord.profit_inr.toFixed(2)} | `;
-      logEntry.action = `FLIP_CLOSE`;
-      openTrade = null;
-      clearCooldown(data); // no cooldown on signal flip
-
-      // Open new opposite trade immediately
-      const canTrade = await canOpenTrade(data.balance);
-      if (canTrade.allowed) {
-        const type = signal === 'Buy' ? 'LONG' : 'SHORT';
-        const stopLoss    = calculateStopLoss(price, type, atrValue, utbotStop, config);
-        const positionSize = await calculatePositionSize(data.balance, price, type, stopLoss, atrValue, config);
-        const tpLevels    = calculateTakeProfitLevels(price, type, atrValue, config);
-        const tp1Price    = tpLevels[0]?.price || null;
-
-        openTrade = {
-          type,
-          entry_price: price,
-          amount: positionSize,
-          original_amount: positionSize,
-          stop_loss: stopLoss,
-          tp1_price: tp1Price,
-          tp_levels: tpLevels,
-          opened_at: new Date().toISOString(),
-          strategy: signal === 'Buy' ? 'UT Bot #2 (KV=2, ATR=300)' : 'UT Bot #1 (KV=2, ATR=1)',
-          atr_at_entry: atrValue,
-          breakeven_moved: false
-        };
-        actionMessage += (signal === 'Buy' ? '🟢 OPENED LONG' : '🔴 OPENED SHORT') +
-          ` @ $${price.toFixed(2)} | SL: $${stopLoss?.toFixed(2) || 'N/A'} | TP1: $${tp1Price?.toFixed(2) || 'N/A'}`;
-        logEntry.action = 'FLIP_OPEN';
-        logEntry.stop_loss = stopLoss;
-        logEntry.tp1 = tp1Price;
-        data.last_signal = signal;
       } else {
-        actionMessage += `⚠️ Cannot open new ${signal}: ${canTrade.reason}`;
+        // Blocked due to cooldown
+        if (!cooldownReason) cooldownReason = 'Cooldown active';
+        actionMessage = cooldownReason;
+        logEntry.action = 'COOLDOWN';
       }
     }
   }
@@ -913,8 +832,7 @@ async function updateDemoTrade(signal, price, atrValue, utbotStop) {
     action: actionMessage,
     stop_loss: openTrade?.stop_loss || null,
     tp_levels: openTrade?.tp_levels || [],
-    position_size: openTrade?.amount || 0,
-    cooldown: data.cooldown ? getCooldownStatus(data, 'Buy') : null
+    position_size: openTrade?.amount || 0
   };
 }
 
@@ -932,7 +850,11 @@ async function forceClosePosition(currentPrice, reason) {
     pl_inr: tradeRecord.profit_inr
   };
   data.order_log.push(logEntry);
-  setCooldown(data, side, 'SL'); // treat force close same as SL for cooldown
+  // Set cooldown after force close
+  data.last_closed_time = Date.now();
+  data.last_closed_side = side;
+  data.pending_opposite_side = null;
+  data.pending_opposite_time = null;
   await saveTrades(data);
   return tradeRecord;
 }
@@ -942,7 +864,7 @@ async function forceClosePosition(currentPrice, reason) {
 // ------------------------------
 function isWithinTradingHours(state) {
   if (state.force_start) return true;
-  if (!state.enabled) return false;   // trading disabled = not within hours
+  if (!state.enabled) return true;
   const hour = getCurrentHourIST();
   return hour >= state.start_hour && hour < state.end_hour;
 }
@@ -957,19 +879,23 @@ async function isTradingAllowed() {
   return { allowed: true, reason: null };
 }
 
-// Get current date string in IST (YYYY-MM-DD) correctly
-function getTodayIST() {
-  const now = new Date();
-  // Format directly in IST locale to get YYYY-MM-DD
-  const parts = now.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }); // en-CA gives YYYY-MM-DD
-  return parts;
-}
+// ------------------------------
+// Daily reset cron job (fixed)
+// ------------------------------
 async function resetDailyIfNeeded() {
+  const config = await loadRiskConfig();
   const state = await loadRiskState();
-  const todayStr = getTodayIST();
+  const resetHour = config.daily_limits.reset_hour; // 0 = midnight
+
+  // Get current date in IST
+  const nowIST = new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
+  const now = new Date(nowIST);
+  const todayStr = now.toISOString().split('T')[0];
+
+  // If last_reset is not today, reset
   if (state.last_reset !== todayStr) {
     await resetRiskState();
-    console.log(`🔄 Daily risk state reset for ${todayStr} (IST)`);
+    console.log(`🔄 Daily risk state reset at ${now.toISOString()} (IST midnight)`);
   }
 }
 
@@ -1082,13 +1008,12 @@ app.get('/chart-data', async (req, res) => {
       low: parseFloat(k[3]),
       close: parseFloat(k[4])
     }));
-    // UT Bot #2 (KV=2, ATR=300) — Buy stop line (green)
-    const df2 = calcUtbot(klines, 2, 300);
-    const stopLineBuy = df2.stop.map((val, idx) => ({ time: candles[idx].time, value: val }));
-    // UT Bot #1 (KV=2, ATR=1) — Sell stop line (red)
     const df1 = calcUtbot(klines, 2, 1);
-    const stopLineSell = df1.stop.map((val, idx) => ({ time: candles[idx].time, value: val }));
-    res.json({ candles, stop_line: stopLineBuy, stop_line_sell: stopLineSell });
+    const stopLine = df1.stop.map((val, idx) => ({
+      time: candles[idx].time,
+      value: val
+    }));
+    res.json({ candles, stop_line: stopLine });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
@@ -1233,7 +1158,6 @@ app.post('/clear-history', async (req, res) => {
     data.order_log = [];
     data.balance = START_BALANCE;
     data.open_trade = null;
-    data.cooldown = null;
     data.last_closed_time = null;
     data.last_closed_side = null;
     data.pending_opposite_side = null;
