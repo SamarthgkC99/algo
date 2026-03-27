@@ -60,11 +60,7 @@ async function loadTrades() {
       history: [],
       order_log: [],
       last_signal: null,
-      // Cooldown fields
-      last_closed_time: null,
-      last_closed_side: null,
-      pending_opposite_side: null,
-      pending_opposite_time: null
+      cooldown: null
     };
     await redis.set(TRADES_KEY, JSON.stringify(defaultData));
     return defaultData;
@@ -84,11 +80,9 @@ async function loadRiskState() {
   if (!data) return resetRiskState();
   let state = typeof data === 'string' ? JSON.parse(data) : data;
 
-  // If last_reset is a number (old format), convert to date string
+  // Migrate old number format to date string
   if (typeof state.last_reset === 'number') {
-    const date = new Date(state.last_reset);
-    const istDate = date.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
-    state.last_reset = new Date(istDate).toISOString().split('T')[0];
+    state.last_reset = getTodayIST();
     await saveRiskState(state);
   }
   return state;
@@ -99,14 +93,526 @@ async function saveRiskState(state) {
 }
 
 async function resetRiskState() {
-  // Get current date in IST (YYYY-MM-DD)
-  const nowIST = new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
-  const todayStr = new Date(nowIST).toISOString().split('T')[0];
-
   const state = {
     daily_loss: 0,
     daily_profit: 0,
     daily_trades: 0,
+    last_reset: getTodayIST(),
+    peak_balance: START_BALANCE
+  };
+  await saveRiskState(state);
+  return state;
+}
+
+async function loadRiskConfig() {
+  const data = await redis.get(RISK_CONFIG_KEY);
+  if (!data) {
+    const defaultConfig = {
+      stop_loss: {
+        enabled: true,
+        type: 'hybrid',
+        atr_multiplier: 2.0,
+        max_loss_percentage: 3.0,
+        trailing_enabled: true,
+        trailing_atr_multiplier: 1.5
+      },
+      take_profit: {
+        enabled: true,
+        type: 'scaled_atr',
+        levels: [
+          { percentage: 50, atr_multiplier: 2.5, name: 'TP1' },
+          { percentage: 30, atr_multiplier: 5.0, name: 'TP2' },
+          { percentage: 20, atr_multiplier: 7.5, name: 'TP3' }
+        ]
+      },
+      position_sizing: {
+        method: 'percentage',        // 'percentage', 'fixed', or 'risk_fixed'
+        value: 5.0,                 // percentage if method=percentage, fixed BTC if method=fixed, risk amount if method=risk_fixed
+        min_position_size: 0.0001,
+        max_position_size: 0.01,
+        risk_amount: 100            // INR, used only if method='risk_fixed'
+      },
+      daily_limits: {
+        enabled: true,
+        max_daily_loss: 1000.0,
+        max_daily_trades: 20,
+        reset_hour: 0
+      },
+      account_protection: {
+        max_drawdown_percentage: 20.0,
+        min_balance: 5000.0,
+        emergency_stop: false
+      },
+      different_rules_for_position_type: {
+        enabled: true,
+        long: { tp_atr_multipliers: [3.0, 6.0, 9.0] },
+        short: { tp_atr_multipliers: [2.0, 4.0, 6.0] }
+      }
+    };
+    await saveRiskConfig(defaultConfig);
+    return defaultConfig;
+  }
+  return typeof data === 'string' ? JSON.parse(data) : data;
+}
+
+async function saveRiskConfig(config) {
+  await redis.set(RISK_CONFIG_KEY, JSON.stringify(config));
+}
+
+async function loadTradingState() {
+  const data = await redis.get(TRADING_STATE_KEY);
+  if (!data) {
+    const defaultState = {
+      enabled: true,
+      start_hour: 18,
+      end_hour: 23,
+      manual_pause: false,
+      force_start: false
+    };
+    await redis.set(TRADING_STATE_KEY, JSON.stringify(defaultState));
+    return defaultState;
+  }
+  return typeof data === 'string' ? JSON.parse(data) : data;
+}
+
+async function saveTradingState(state) {
+  await redis.set(TRADING_STATE_KEY, JSON.stringify(state));
+}
+
+// ------------------------------
+// USDT/INR Rate Management
+// ------------------------------
+async function getUSDTINR() {
+  let rate = await redis.get(USDT_INR_KEY);
+  if (!rate) {
+    rate = 85;
+    await redis.set(USDT_INR_KEY, rate);
+  }
+  return parseFloat(rate);
+}
+
+async function setUSDTINR(rate) {
+  await redis.set(USDT_INR_KEY, parseFloat(rate));
+}
+
+// ------------------------------
+// Helper: Current hour in IST (Asia/Kolkata)
+// ------------------------------
+function getCurrentHourIST() {
+  const now = new Date();
+  const istString = now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata', hour: 'numeric', hour12: false });
+  return parseInt(istString);
+}
+
+// ------------------------------
+// Binance API with Multi-Proxy Fallback
+// ------------------------------
+const BINANCE_ENDPOINTS = [
+  'https://data-api.binance.vision',
+  'https://api.binance.us',
+  'https://api1.binance.com',
+  'https://api2.binance.com',
+  'https://api3.binance.com',
+  'https://api4.binance.com',
+  'https://api.binance.com',
+  'https://api-gcp.binance.com'
+];
+
+async function binanceRequest(path, params = {}) {
+  for (const endpoint of BINANCE_ENDPOINTS) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 6000);
+    try {
+      const url = new URL(path, endpoint);
+      Object.entries(params).forEach(([k, v]) => url.searchParams.append(k, v));
+      const response = await fetch(url.toString(), {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'application/json',
+          'Accept-Language': 'en-US,en;q=0.9',
+          'Cache-Control': 'no-cache'
+        },
+        signal: controller.signal
+      });
+      clearTimeout(timeout);
+      if (response.status === 200) {
+        console.log(`✅ Binance data from: ${endpoint}`);
+        return await response.json();
+      }
+      console.warn(`⚠️ ${endpoint} returned ${response.status} — trying next...`);
+    } catch (err) {
+      clearTimeout(timeout);
+      console.warn(`⚠️ ${endpoint} error: ${err.message} — trying next...`);
+    }
+  }
+  console.error('❌ All Binance endpoints failed. Falling back to alternative sources.');
+  return null;
+}
+
+async function fetchPriceFromCoinGecko() {
+  try {
+    const url = 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd';
+    const response = await fetch(url, { timeout: 6000 });
+    const data = await response.json();
+    if (data && data.bitcoin && data.bitcoin.usd) {
+      console.log('✅ Price from CoinGecko');
+      return data.bitcoin.usd;
+    }
+  } catch (err) {
+    console.warn('CoinGecko price error:', err.message);
+  }
+  return null;
+}
+
+async function fetchKlinesFromCryptoCompare(limit = 350) {
+  try {
+    const url = `https://min-api.cryptocompare.com/data/v2/histominute?fsym=BTC&tsym=USD&limit=${limit}&aggregate=5`;
+    const response = await fetch(url, { timeout: 8000 });
+    const data = await response.json();
+    if (data && data.Data && data.Data.Data && data.Data.Data.length > 0) {
+      console.log('✅ Klines from CryptoCompare (fallback)');
+      return data.Data.Data.map(c => [
+        c.time * 1000,
+        String(c.open),
+        String(c.high),
+        String(c.low),
+        String(c.close),
+        String(c.volumefrom),
+        c.time * 1000 + 299999,
+        String(c.volumeto),
+        0, '0', '0', '0'
+      ]);
+    }
+  } catch (err) {
+    console.warn('CryptoCompare klines error:', err.message);
+  }
+  return null;
+}
+
+async function fetchKlinesFromBybit(limit = 350) {
+  try {
+    const url = `https://api.bybit.com/v5/market/kline?category=spot&symbol=BTCUSDT&interval=5&limit=${limit}`;
+    const response = await fetch(url, { timeout: 8000 });
+    const data = await response.json();
+    if (data && data.result && data.result.list && data.result.list.length > 0) {
+      console.log('✅ Klines from Bybit (fallback)');
+      return data.result.list.reverse().map(c => [
+        parseInt(c[0]),
+        c[1],
+        c[2],
+        c[3],
+        c[4],
+        c[5],
+        parseInt(c[0]) + 299999,
+        c[6],
+        0, '0', '0', '0'
+      ]);
+    }
+  } catch (err) {
+    console.warn('Bybit klines error:', err.message);
+  }
+  return null;
+}
+
+async function getCurrentPrice() {
+  const binancePrice = await binanceRequest('/api/v3/ticker/price', { symbol: 'BTCUSDT' });
+  if (binancePrice && binancePrice.price) return parseFloat(binancePrice.price);
+  try {
+    const bybitUrl = 'https://api.bybit.com/v5/market/tickers?category=spot&symbol=BTCUSDT';
+    const res = await fetch(bybitUrl, { timeout: 6000 });
+    const data = await res.json();
+    if (data?.result?.list?.[0]?.lastPrice) {
+      console.log('✅ Price from Bybit');
+      return parseFloat(data.result.list[0].lastPrice);
+    }
+  } catch (err) { console.warn('Bybit price error:', err.message); }
+  const geckoPrice = await fetchPriceFromCoinGecko();
+  if (geckoPrice) return geckoPrice;
+  console.error('❌ All price sources failed');
+  return null;
+}
+
+async function getKlines(symbol = 'BTCUSDT', interval = '5m', limit = 350) {
+  const binanceKlines = await binanceRequest('/api/v3/klines', { symbol, interval, limit });
+  if (binanceKlines && binanceKlines.length > 0) return binanceKlines;
+  const bybitKlines = await fetchKlinesFromBybit(limit);
+  if (bybitKlines && bybitKlines.length > 0) return bybitKlines;
+  const ccKlines = await fetchKlinesFromCryptoCompare(limit);
+  if (ccKlines && ccKlines.length > 0) return ccKlines;
+  console.error('❌ All kline sources failed');
+  return null;
+}
+
+// ------------------------------
+// UT Bot Logic (unchanged)
+// ------------------------------
+function calcUtbot(klines, keyvalue, atrPeriod) {
+  const close = klines.map(k => parseFloat(k[4]));
+  const high  = klines.map(k => parseFloat(k[2]));
+  const low   = klines.map(k => parseFloat(k[3]));
+
+  // True Range
+  const tr = [];
+  for (let i = 0; i < high.length; i++) {
+    if (i === 0) { tr.push(high[i] - low[i]); continue; }
+    const hl = high[i] - low[i];
+    const hc = Math.abs(high[i] - close[i-1]);
+    const lc = Math.abs(low[i] - close[i-1]);
+    tr.push(Math.max(hl, hc, lc));
+  }
+
+  // RMA (Wilder's smoothing) — matches TradingView Pine Script
+  const alpha = 1 / atrPeriod;
+  const atr = new Array(tr.length).fill(null);
+  // Seed with simple average of first `atrPeriod` values
+  if (tr.length >= atrPeriod) {
+    let seed = 0;
+    for (let i = 0; i < atrPeriod; i++) seed += tr[i];
+    atr[atrPeriod - 1] = seed / atrPeriod;
+    for (let i = atrPeriod; i < tr.length; i++) {
+      atr[i] = alpha * tr[i] + (1 - alpha) * atr[i-1];
+    }
+  }
+
+  const nLoss = atr.map(a => (a === null ? null : keyvalue * a));
+
+  // xATRTrailingStop — use first valid nLoss as initial stop
+  const firstValid = nLoss.findIndex(v => v !== null);
+  const xATRTrailingStop = new Array(close.length).fill(close[0]);
+  const pos = new Array(close.length).fill(0);
+
+  for (let i = 1; i < close.length; i++) {
+    const src  = close[i];
+    const src1 = close[i-1];
+    const prevStop = xATRTrailingStop[i-1];
+    const nl = nLoss[i];
+
+    if (nl === null) {
+      xATRTrailingStop[i] = prevStop;
+      pos[i] = pos[i-1];
+      continue;
+    }
+
+    let newStop;
+    if (src > prevStop && src1 > prevStop) {
+      newStop = Math.max(prevStop, src - nl);
+    } else if (src < prevStop && src1 < prevStop) {
+      newStop = Math.min(prevStop, src + nl);
+    } else {
+      newStop = src > prevStop ? src - nl : src + nl;
+    }
+    xATRTrailingStop[i] = newStop;
+
+    if (src1 < prevStop && src > prevStop)      pos[i] = 1;
+    else if (src1 > prevStop && src < prevStop) pos[i] = -1;
+    else                                         pos[i] = pos[i-1];
+  }
+
+  return { stop: xATRTrailingStop, pos, atr };
+}
+
+async function getUTBotSignal() {
+  const klines = await getKlines();
+  if (!klines) {
+    console.error('No klines received');
+    return { signal: 'No Data', price: 0, atr: 0, utbot_stop: 0 };
+  }
+  const price = parseFloat(klines[klines.length-1][4]);
+
+  // UT Bot #2 — KV=2, ATR=300 → drives BUY signals
+  const df2 = calcUtbot(klines, 2, 300);
+  // UT Bot #1 — KV=2, ATR=1   → drives SELL signals
+  const df1 = calcUtbot(klines, 2, 1);
+
+  const signal2 = df2.pos[df2.pos.length-1];
+  const signal1 = df1.pos[df1.pos.length-1];
+  const stop2   = df2.stop[df2.stop.length-1];
+  const stop1   = df1.stop[df1.stop.length-1];
+
+  // Use ATR-14 (standard, RMA) for SL/TP — tight and responsive
+  const df14 = calcUtbot(klines, 1, 14); // keyvalue=1 so nLoss=atr; we only need the atr array
+  let atr = 0;
+  for (let i = df14.atr.length - 1; i >= 0; i--) {
+    if (df14.atr[i] !== null) { atr = df14.atr[i]; break; }
+  }
+
+  let signal = 'Hold';
+  let utbotStop = null;
+
+  // Buy: UT Bot #2 (slow, ATR=300) crosses UP
+  if (signal2 === 1) {
+    signal = 'Buy';
+    utbotStop = stop2;
+  }
+  // Sell: UT Bot #1 (fast, ATR=1) crosses DOWN — overrides buy
+  if (signal1 === -1) {
+    signal = 'Sell';
+    utbotStop = stop1;
+  }
+
+  return { signal, price, atr, utbot_stop: utbotStop || price };
+}
+
+// ------------------------------
+// Risk Management Functions
+// ------------------------------
+async function calculatePositionSize(balance, entryPrice, type, stopLoss, atr, config) {
+  const sizing = config.position_sizing;
+  let size;
+
+  switch (sizing.method) {
+    case 'percentage':
+      const btcPriceInr = entryPrice * (await getUSDTINR());
+      const positionValueInr = balance * (sizing.value / 100);
+      size = positionValueInr / btcPriceInr;
+      break;
+
+    case 'fixed':
+      size = sizing.value;
+      break;
+
+    case 'risk_fixed':
+      if (!stopLoss) {
+        const btcPriceInr = entryPrice * (await getUSDTINR());
+        const positionValueInr = balance * (5 / 100);
+        size = positionValueInr / btcPriceInr;
+      } else {
+        const usdtInr = await getUSDTINR();
+        const slDistance = Math.abs(entryPrice - stopLoss);
+        const riskPerTrade = sizing.risk_amount;
+        size = riskPerTrade / (slDistance * usdtInr);
+      }
+      break;
+
+    default:
+      size = 0.001;
+  }
+
+  size = Math.min(sizing.max_position_size, Math.max(sizing.min_position_size, size));
+  return parseFloat(size.toFixed(6));
+}
+
+function calculateStopLoss(entry, type, atr, utbotStop, config) {
+  const slConf = config.stop_loss;
+  if (!slConf.enabled) return null;
+
+  // Primary: UT Bot stop line (natural signal level)
+  // Fallback: ATR-14 × 1.5 if utbotStop is missing or too far
+  const atrStop = type === 'LONG'
+    ? entry - atr * 1.5
+    : entry + atr * 1.5;
+
+  // Hard cap: max 2% loss from entry (protects against crazy wide stops)
+  const hardCap = type === 'LONG'
+    ? entry * 0.98
+    : entry * 1.02;
+
+  let stop;
+  if (utbotStop) {
+    // Use utbot stop, but never wider than the hard cap
+    stop = type === 'LONG'
+      ? Math.max(utbotStop, hardCap)   // highest of utbot/cap (closest to entry)
+      : Math.min(utbotStop, hardCap);  // lowest of utbot/cap
+  } else {
+    // No utbot stop: use ATR-1.5x, bounded by hard cap
+    stop = type === 'LONG'
+      ? Math.max(atrStop, hardCap)
+      : Math.min(atrStop, hardCap);
+  }
+
+  return parseFloat(stop.toFixed(2));
+}
+
+function calculateTakeProfitLevels(entry, type, atr, config) {
+  const tpConf = config.take_profit;
+  if (!tpConf.enabled) return [];
+
+  // TP multipliers based on ATR-14:
+  // LONG:  TP1 = entry + ATR×2   (~1:1.3 RR with 1.5× SL) — conservative, reliable
+  // SHORT: TP1 = entry - ATR×1.5 (~1:1 RR with 1.5× SL)  — shorts are faster, take quicker
+  const multipliers = type === 'LONG'
+    ? [2.0, 3.5, 5.0]
+    : [1.5, 2.5, 4.0];
+
+  const levels = [];
+  const pcts = [100, 0, 0]; // Only TP1 (100%) used for full exit; TP2/TP3 shown for info only
+  const names = ['TP1', 'TP2', 'TP3'];
+
+  for (let i = 0; i < multipliers.length; i++) {
+    const price = type === 'LONG'
+      ? entry + atr * multipliers[i]
+      : entry - atr * multipliers[i];
+    levels.push({
+      price: parseFloat(price.toFixed(2)),
+      percentage: pcts[i],
+      name: names[i],
+      hit: false
+    });
+  }
+  return levels;
+}
+
+function updateTrailingStop(current, type, stopLoss, atr, config) {
+  if (!config.stop_loss.trailing_enabled) return null;
+  const mult = config.stop_loss.trailing_atr_multiplier;
+  const trail = atr * mult;
+  let newStop;
+  if (type === 'LONG') {
+    newStop = current - trail;
+    if (newStop > stopLoss) return parseFloat(newStop.toFixed(2));
+  } else {
+    newStop = current + trail;
+    if (newStop < stopLoss) return parseFloat(newStop.toFixed(2));
+  }
+  return null;
+}
+
+async function checkDailyLimits() {
+  const config = await loadRiskConfig();
+  const state = await loadRiskState();
+  const limits = config.daily_limits;
+  if (!limits.enabled) return { allowed: true, reason: null };
+  if (state.daily_loss >= limits.max_daily_loss) {
+    return { allowed: false, reason: `Daily loss limit reached (₹${state.daily_loss.toFixed(2)} / ₹${limits.max_daily_loss})` };
+  }
+  if (state.daily_trades >= limits.max_daily_trades) {
+    return { allowed: false, reason: `Daily trade limit reached (${state.daily_trades} / ${limits.max_daily_trades})` };
+  }
+  return { allowed: true, reason: null };
+}
+
+async function checkAccountProtection(balance) {
+  const config = await loadRiskConfig();
+  const state = await loadRiskState();
+  const prot = config.account_protection;
+  if (prot.emergency_stop) return { allowed: false, reason: 'Emergency stop activated' };
+  if (balance < prot.min_balance) return { allowed: false, reason: `Balance below minimum (₹${balance.toFixed(2)} < ₹${prot.min_balance})` };
+  if (state.peak_balance > 0) {
+    const drawdownPct = ((state.peak_balance - balance) / state.peak_balance) * 100;
+    if (drawdownPct >= prot.max_drawdown_percentage) {
+      return { allowed: false, reason: `Max drawdown exceeded (${drawdownPct.toFixed(2)}% >= ${prot.max_drawdown_percentage}%)` };
+    }
+  }
+  if (balance > state.peak_balance) {
+    state.peak_balance = balance;
+    await saveRiskState(state);
+  }
+  return { allowed: true, reason: null };
+}
+
+async function canOpenTrade(balance) {
+  const daily = await checkDailyLimits();
+  if (!daily.allowed) return daily;
+  const account = await checkAccountProtection(balance);
+  if (!account.allowed) return account;
+  return { allowed: true, reason: null };
+}
+
+async function recordTradeResult(profitLoss) {
+  const state = await loadRiskState();
+  state.daily_trades++;
+  if (profitLoss < 0) {
+    sta    daily_trades: 0,
     last_reset: todayStr,
     peak_balance: START_BALANCE
   };
