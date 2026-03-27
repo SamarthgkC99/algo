@@ -972,8 +972,7 @@ async function refreshChart() {
 function buildChart(data) {
   const ctx = document.getElementById('priceChart').getContext('2d');
   const cs = data.candles.slice(-100).map(c=>({ x:c.time*1000, o:c.open, h:c.high, l:c.low, c:c.close }));
-  const sl2 = data.stop_line.slice(-100).map(s=>({ x:s.time*1000, y:s.value }));
-  const sl1 = (data.stop_line_sell || []).slice(-100).map(s=>({ x:s.time*1000, y:s.value }));
+  const sl = data.stop_line.slice(-100).map(s=>({ x:s.time*1000, y:s.value }));
   if (chartInstance) {
     chartInstance.canvas.removeEventListener('mousedown', onMD);
     chartInstance.canvas.removeEventListener('mousemove', onMM);
@@ -988,11 +987,8 @@ function buildChart(data) {
         borderColor:{up:'#3fb950',down:'#f85149',unchanged:'#8b949e'},
         backgroundColor:{up:'rgba(63,185,80,0.07)',down:'rgba(248,81,73,0.07)',unchanged:'rgba(139,148,158,0.07)'},
         borderWidth:1, barThickness:'flex', maxBarThickness:10 },
-      { label:'#2 Buy — KV=2, ATR=300', data:sl2, type:'line',
-        borderColor:'#3fb950', backgroundColor:'transparent',
-        borderWidth:2, borderDash:[5,5], pointRadius:0, tension:0 },
-      { label:'#1 Sell — KV=2, ATR=1', data:sl1, type:'line',
-        borderColor:'#f85149', backgroundColor:'transparent',
+      { label:'UT Stop', data:sl, type:'line',
+        borderColor:'#f0c442', backgroundColor:'transparent',
         borderWidth:2, borderDash:[5,5], pointRadius:0, tension:0 }
     ]},
     options: {
