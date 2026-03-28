@@ -135,6 +135,7 @@ async function resetRiskState() {
     daily_loss: 0, daily_profit: 0, daily_trades: 0,
     last_reset: todayStr, peak_balance: START_BALANCE
   };
+  await redis.set('daily_trades_atomic', '0'); // reset atomic counter too
   await saveRiskState(state);
   return state;
 }
@@ -154,6 +155,8 @@ async function loadRiskConfig() {
       take_profit: {
         enabled: true,
         type: 'asymmetric',
+        // LONG: TP1=60% at 1.5×ATR, TP2=40% at 3×ATR
+        // SHORT: TP1=100% at 1.5×ATR (full exit — fast signal)
         levels: [
           { percentage: 60, atr_multiplier: 1.5, name: 'TP1' },
           { percentage: 40, atr_multiplier: 3.0, name: 'TP2' }
@@ -179,8 +182,10 @@ async function loadRiskConfig() {
       },
       different_rules_for_position_type: {
         enabled: true,
+        // LONG: TP1 at 1.5×ATR (close 60%), TP2 at 3×ATR (close remaining 40%)
         long:  { tp_atr_multipliers: [1.5, 3.0] },
-        short: { tp_atr_multipliers: [1.5, 2.5] }
+        // SHORT: single TP at 1.5×ATR (full 100% exit)
+        short: { tp_atr_multipliers: [1.5] }
       },
       cooldown: {
         sl_condition_based: true,
@@ -262,80 +267,89 @@ function onPriceTick(price) {
 async function checkSlTpOnTick(price) {
   wsCheckInProgress = true;
   try {
-    const data = await loadTrades();
-    const openTrade = data.open_trade;
-    if (!openTrade) return; // nothing to check
+    // ✅ Redis-level lock: prevents race condition where multiple ticks
+    // trigger the same close before the first one saves to Redis
+    const lockKey = 'sl_tp_lock';
+    const lockSet = await redis.set(lockKey, '1', { nx: true, ex: 3 }); // 3s TTL
+    if (!lockSet) return; // another tick already holds the lock
 
-    const posType  = openTrade.type;
-    const sl       = openTrade.stop_loss;
-    const nextTP   = openTrade.tp_levels?.find(t => !t.hit) || null;
-    const tp1Price = nextTP?.price || openTrade.tp1_price || null;
+    try {
+      const data = await loadTrades();
+      const openTrade = data.open_trade;
+      if (!openTrade) return;
 
-    const slHit  = sl      && ((posType === 'LONG'  && price <= sl)       || (posType === 'SHORT' && price >= sl));
-    const tp1Hit = tp1Price && ((posType === 'LONG'  && price >= tp1Price) || (posType === 'SHORT' && price <= tp1Price));
+      const posType = openTrade.type;
+      const sl      = openTrade.stop_loss;
 
-    if (!slHit && !tp1Hit) return; // nothing triggered
+      // ✅ Find next unhit TP level (TP1 first, then TP2)
+      const nextTP      = openTrade.tp_levels?.find(t => !t.hit) || null;
+      const nextTPPrice = nextTP?.price || null;
+      const nextTPName  = nextTP?.name  || 'TP';
 
-    const config = await loadRiskConfig();
+      const slHit  = sl         && ((posType === 'LONG' && price <= sl)         || (posType === 'SHORT' && price >= sl));
+      const tpHit  = nextTPPrice && ((posType === 'LONG' && price >= nextTPPrice) || (posType === 'SHORT' && price <= nextTPPrice));
 
-    if (slHit) {
-      console.log(`🛑 [WS] STOP-LOSS triggered @ $${price.toFixed(2)} | SL was $${sl.toFixed(2)}`);
-      const { tradeRecord, side } = await closeFullPosition(data, openTrade, price, 'Stop-Loss Hit (WS)');
-      const logEntry = {
-        time: new Date().toISOString(), side: posType === 'LONG' ? 'Sell' : 'Buy',
-        action: 'STOP_LOSS_WS', price, quantity: openTrade.amount,
-        pl_inr: tradeRecord.profit_inr
-      };
-      if (!data.order_log) data.order_log = [];
-      data.order_log.push(logEntry);
-      if (data.order_log.length > 100) data.order_log.shift();
-      data.last_closed_time     = Date.now();
-      data.last_closed_side     = side;
-      data.last_closed_sl_price = sl;
-      data.last_close_reason    = 'sl';
-      data.pending_opposite_side  = null;
-      data.pending_opposite_time  = null;
-      await saveTrades(data);
-      console.log(`✅ [WS] SL closed. P/L: ₹${tradeRecord.profit_inr.toFixed(2)} | Balance: ₹${data.balance.toFixed(2)}`);
+      if (!slHit && !tpHit) return;
 
-    } else if (tp1Hit) {
-      if (posType === 'LONG') {
-        // Partial close 60%, move SL to breakeven
-        console.log(`✅ [WS] TP1 triggered (LONG) @ $${price.toFixed(2)} | TP was $${tp1Price.toFixed(2)}`);
-        const { tradeRecord } = await closePartialPosition(data, openTrade, price, 0.6, 'TP1 Hit (WS)');
-        const logEntry = {
-          time: new Date().toISOString(), side: 'Sell',
-          action: 'TP1_PARTIAL_LONG_WS', price, quantity: openTrade.amount * 0.6,
-          pl_inr: tradeRecord.profit_inr
-        };
+      if (slHit) {
+        // ─── Stop Loss ─────────────────────────────────────────────────────
+        console.log(`🛑 [WS] SL triggered @ $${price.toFixed(2)} | SL=$${sl.toFixed(2)}`);
+        const { tradeRecord, side } = await closeFullPosition(data, openTrade, price, 'Stop-Loss Hit (WS)');
         if (!data.order_log) data.order_log = [];
-        data.order_log.push(logEntry);
+        data.order_log.push({ time: new Date().toISOString(), side: posType === 'LONG' ? 'Sell' : 'Buy', action: 'STOP_LOSS_WS', price, quantity: openTrade.amount, pl_inr: tradeRecord.profit_inr });
         if (data.order_log.length > 100) data.order_log.shift();
-        data.last_close_reason = 'tp';
-        // open_trade still set (partial close updates it in place)
+        data.last_closed_time = Date.now(); data.last_closed_side = side;
+        data.last_closed_sl_price = sl;     data.last_close_reason = 'sl';
+        data.pending_opposite_side = null;  data.pending_opposite_time = null;
         await saveTrades(data);
-        console.log(`✅ [WS] TP1 partial closed 60%. SL → breakeven $${openTrade.entry_price.toFixed(2)} | P/L so far: ₹${tradeRecord.profit_inr.toFixed(2)}`);
-      } else {
-        // SHORT: full exit at TP1
-        console.log(`✅ [WS] TP1 triggered (SHORT) @ $${price.toFixed(2)} | TP was $${tp1Price.toFixed(2)}`);
-        const { tradeRecord, side } = await closeFullPosition(data, openTrade, price, 'TP1 Hit - Full Exit (Short WS)');
-        const logEntry = {
-          time: new Date().toISOString(), side: 'Buy',
-          action: 'TP1_FULL_SHORT_WS', price, quantity: openTrade.amount,
-          pl_inr: tradeRecord.profit_inr
-        };
-        if (!data.order_log) data.order_log = [];
-        data.order_log.push(logEntry);
-        if (data.order_log.length > 100) data.order_log.shift();
-        data.last_closed_time     = Date.now();
-        data.last_closed_side     = side;
-        data.last_closed_sl_price = null;
-        data.last_close_reason    = 'tp';
-        data.pending_opposite_side  = null;
-        data.pending_opposite_time  = null;
-        await saveTrades(data);
-        console.log(`✅ [WS] SHORT TP1 full closed. P/L: ₹${tradeRecord.profit_inr.toFixed(2)} | Balance: ₹${data.balance.toFixed(2)}`);
+        console.log(`✅ [WS] SL closed. P/L: ₹${tradeRecord.profit_inr.toFixed(2)} | Bal: ₹${data.balance.toFixed(2)}`);
+
+      } else if (tpHit) {
+        const isTP1 = nextTPName === 'TP1';
+        const isTP2 = nextTPName === 'TP2';
+
+        if (posType === 'LONG' && isTP1) {
+          // ─── LONG TP1: partial 60%, SL → breakeven ──────────────────────
+          console.log(`✅ [WS] TP1 (LONG) @ $${price.toFixed(2)} | closing 60%`);
+          const qty60 = parseFloat((openTrade.amount * 0.6).toFixed(6));
+          const { tradeRecord } = await closePartialPosition(data, openTrade, price, 0.6, 'TP1 Hit');
+          if (!data.order_log) data.order_log = [];
+          data.order_log.push({ time: new Date().toISOString(), side: 'Sell', action: 'TP1_PARTIAL_60_WS', price, quantity: qty60, pl_inr: tradeRecord.profit_inr });
+          if (data.order_log.length > 100) data.order_log.shift();
+          data.last_close_reason = 'tp';
+          data.open_trade = openTrade; // still open with 40% remaining
+          await saveTrades(data);
+          console.log(`✅ [WS] TP1 60% closed. SL→breakeven $${openTrade.entry_price.toFixed(2)} | P/L: ₹${tradeRecord.profit_inr.toFixed(2)} | Remaining: ${openTrade.amount} BTC`);
+
+        } else if (posType === 'LONG' && isTP2) {
+          // ─── LONG TP2: close remaining 40% fully ────────────────────────
+          console.log(`✅ [WS] TP2 (LONG) @ $${price.toFixed(2)} | closing remaining 40%`);
+          const { tradeRecord, side } = await closeFullPosition(data, openTrade, price, 'TP2 Hit - Full Exit');
+          if (!data.order_log) data.order_log = [];
+          data.order_log.push({ time: new Date().toISOString(), side: 'Sell', action: 'TP2_FULL_WS', price, quantity: openTrade.amount, pl_inr: tradeRecord.profit_inr });
+          if (data.order_log.length > 100) data.order_log.shift();
+          data.last_closed_time = Date.now(); data.last_closed_side = side;
+          data.last_closed_sl_price = null;   data.last_close_reason = 'tp';
+          data.pending_opposite_side = null;  data.pending_opposite_time = null;
+          await saveTrades(data);
+          console.log(`✅ [WS] TP2 40% closed. Total trade done. P/L: ₹${tradeRecord.profit_inr.toFixed(2)} | Bal: ₹${data.balance.toFixed(2)}`);
+
+        } else {
+          // ─── SHORT TP1 (or any remaining TP): full exit ─────────────────
+          console.log(`✅ [WS] ${nextTPName} (SHORT) @ $${price.toFixed(2)} | full exit`);
+          const { tradeRecord, side } = await closeFullPosition(data, openTrade, price, `${nextTPName} Hit - Full Exit (Short)`);
+          if (!data.order_log) data.order_log = [];
+          data.order_log.push({ time: new Date().toISOString(), side: 'Buy', action: `${nextTPName}_FULL_SHORT_WS`, price, quantity: openTrade.amount, pl_inr: tradeRecord.profit_inr });
+          if (data.order_log.length > 100) data.order_log.shift();
+          data.last_closed_time = Date.now(); data.last_closed_side = side;
+          data.last_closed_sl_price = null;   data.last_close_reason = 'tp';
+          data.pending_opposite_side = null;  data.pending_opposite_time = null;
+          await saveTrades(data);
+          console.log(`✅ [WS] SHORT ${nextTPName} full closed. P/L: ₹${tradeRecord.profit_inr.toFixed(2)} | Bal: ₹${data.balance.toFixed(2)}`);
+        }
       }
+    } finally {
+      await redis.del(lockKey); // always release lock
     }
   } finally {
     wsCheckInProgress = false;
@@ -707,8 +721,11 @@ async function canOpenTrade(balance) {
 }
 
 async function recordTradeResult(profitLoss) {
+  // ✅ Fixed: use atomic Redis INCR for daily_trades to prevent race condition
+  // where multiple concurrent closes all read the same stale count
+  await redis.incr('daily_trades_atomic');
   const state = await loadRiskState();
-  state.daily_trades++;
+  state.daily_trades = parseInt((await redis.get('daily_trades_atomic')) || '0');
   if (profitLoss < 0) state.daily_loss   += Math.abs(profitLoss);
   else                state.daily_profit += profitLoss;
   await saveRiskState(state);
@@ -732,14 +749,27 @@ async function closeFullPosition(data, openTrade, currentPrice, reason) {
   const profitInr  = profitUsdt * usdtInr;
   const balanceBefore = data.balance;
   data.balance += profitInr;
+  const closedAt = new Date();
   const tradeRecord = {
-    type: openTrade.type, entry_price: openTrade.entry_price, exit_price: currentPrice,
+    type: openTrade.type,
+    entry_price: openTrade.entry_price,
+    exit_price: currentPrice,
     amount: openTrade.amount,
-    profit_usdt: parseFloat(profitUsdt.toFixed(2)), profit_inr: parseFloat(profitInr.toFixed(2)),
-    balance_before: balanceBefore, balance_after: data.balance,
-    closed_at: new Date().toISOString(), exit_reason: reason, partial: false,
-    stop_loss: openTrade.stop_loss, tp1_price: openTrade.tp1_price,
-    opened_at: openTrade.opened_at, duration_ms: new Date() - new Date(openTrade.opened_at)
+    profit_usdt: parseFloat(profitUsdt.toFixed(2)),
+    profit_inr: parseFloat(profitInr.toFixed(2)),
+    balance_before: parseFloat(balanceBefore.toFixed(2)),
+    balance_after: parseFloat(data.balance.toFixed(2)),
+    // ✅ Trade timings — UTC and IST
+    opened_at: openTrade.opened_at,
+    closed_at: closedAt.toISOString(),
+    opened_at_ist: new Date(openTrade.opened_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
+    closed_at_ist: closedAt.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
+    duration_ms: closedAt - new Date(openTrade.opened_at),
+    exit_reason: reason,
+    partial: false,
+    stop_loss: openTrade.stop_loss,
+    tp1_price: openTrade.tp1_price,
+    tp2_price: openTrade.tp_levels?.[1]?.price || null
   };
   data.history.push(tradeRecord);
   await recordTradeResult(profitInr);
@@ -756,22 +786,37 @@ async function closePartialPosition(data, openTrade, currentPrice, partialPct, r
   const profitInr   = profitUsdt * usdtInr;
   data.balance += profitInr;
   const remainingAmount = parseFloat((openTrade.amount - closeAmount).toFixed(6));
+  const now = new Date();
   const tradeRecord = {
-    type: openTrade.type, entry_price: openTrade.entry_price, exit_price: currentPrice,
+    type: openTrade.type,
+    entry_price: openTrade.entry_price,
+    exit_price: currentPrice,
     amount: closeAmount,
-    profit_usdt: parseFloat(profitUsdt.toFixed(2)), profit_inr: parseFloat(profitInr.toFixed(2)),
-    balance_before: data.balance - profitInr, balance_after: data.balance,
-    closed_at: new Date().toISOString(), exit_reason: reason + ` (partial ${Math.round(partialPct * 100)}%)`,
-    partial: true, stop_loss: openTrade.stop_loss, tp1_price: openTrade.tp1_price,
-    opened_at: openTrade.opened_at, duration_ms: new Date() - new Date(openTrade.opened_at)
+    profit_usdt: parseFloat(profitUsdt.toFixed(2)),
+    profit_inr: parseFloat(profitInr.toFixed(2)),
+    balance_before: parseFloat((data.balance - profitInr).toFixed(2)),
+    balance_after: parseFloat(data.balance.toFixed(2)),
+    // ✅ Trade timings
+    opened_at: openTrade.opened_at,
+    closed_at: now.toISOString(),
+    opened_at_ist: new Date(openTrade.opened_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
+    closed_at_ist: now.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
+    duration_ms: now - new Date(openTrade.opened_at),
+    exit_reason: reason + ` (partial ${Math.round(partialPct * 100)}%)`,
+    partial: true,
+    stop_loss: openTrade.stop_loss,
+    tp1_price: openTrade.tp1_price,
+    tp2_price: openTrade.tp_levels?.[1]?.price || null
   };
   data.history.push(tradeRecord);
   await recordTradeResult(profitInr);
-  // Update open trade in place
+  // ✅ Update open trade in place — mark TP1 hit, move SL to breakeven
   openTrade.amount          = remainingAmount;
-  openTrade.stop_loss       = parseFloat(openTrade.entry_price.toFixed(2)); // move to breakeven
+  openTrade.stop_loss       = parseFloat(openTrade.entry_price.toFixed(2));
   openTrade.breakeven_moved = true;
-  if (openTrade.tp_levels?.length > 0) openTrade.tp_levels[0].hit = true;
+  // ✅ Mark the first unhit TP level as hit (not always index 0 — safety)
+  const firstUnhit = openTrade.tp_levels?.findIndex(t => !t.hit);
+  if (firstUnhit !== -1 && firstUnhit !== undefined) openTrade.tp_levels[firstUnhit].hit = true;
   return { tradeRecord };
 }
 
@@ -882,11 +927,16 @@ async function updateDemoTrade(signal, price, atrValue, utbotStop) {
         const tpLevels     = calculateTakeProfitLevels(price, signal === 'Buy' ? 'LONG' : 'SHORT', atrValue, config);
         const tp1Price     = tpLevels[0]?.price || null;
 
+        const openedAt = new Date();
         openTrade = {
           type: signal === 'Buy' ? 'LONG' : 'SHORT',
           entry_price: price, amount: positionSize, original_amount: positionSize,
-          stop_loss: stopLoss, tp1_price: tp1Price, tp_levels: tpLevels,
-          opened_at: new Date().toISOString(),
+          stop_loss: stopLoss, tp1_price: tp1Price,
+          tp2_price: tpLevels[1]?.price || null,
+          tp_levels: tpLevels,
+          opened_at: openedAt.toISOString(),
+          // ✅ Trade timing in IST for easy reading
+          opened_at_ist: openedAt.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
           strategy: signal === 'Buy' ? 'UT Bot #2 (KV=2, ATR=300)' : 'UT Bot #1 (KV=2, ATR=1)',
           atr_at_entry: atrValue, breakeven_moved: false
         };
