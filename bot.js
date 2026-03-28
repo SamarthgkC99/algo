@@ -11,7 +11,7 @@
 // ✅ Added: SL at 2.5×ATR; TP1 at 1.5×ATR, TP2 at 3×ATR
 // ✅ NEW:   WebSocket price watcher — checks SL/TP on every tick (no more missed hits)
 // ✅ NEW:   Built-in self-pinger — keeps Render server awake every 4 minutes
-// ✅ NEW:   WebSocket fallback chain — Binance WS → Bybit WS → polling fallback
+// ✅ NEW:   WebSocket fallback chain — Bybit WS (primary) → REST polling fallback
 
 require('dotenv').config();
 const express   = require('express');
@@ -342,54 +342,10 @@ async function checkSlTpOnTick(price) {
   }
 }
 
-// --- Binance WebSocket (aggTrade stream — every real trade, ~100ms)
-function connectBinanceWS() {
-  const url = 'wss://stream.binance.com:9443/ws/btcusdt@aggTrade';
-  console.log('🔌 Connecting to Binance WebSocket...');
-  const ws = new WebSocket(url);
-
-  ws.on('open', () => {
-    console.log('✅ Binance WebSocket connected');
-    wsConnected = true;
-    wsSource    = 'binance';
-    wsFailCount = 0;
-    wsInstance  = ws;
-  });
-
-  ws.on('message', (raw) => {
-    try {
-      const msg = JSON.parse(raw);
-      // aggTrade: { p: price, ... }
-      if (msg.p) onPriceTick(parseFloat(msg.p));
-    } catch (_) {}
-  });
-
-  ws.on('error', (err) => {
-    console.warn(`⚠️ Binance WS error: ${err.message}`);
-    wsConnected = false;
-  });
-
-  ws.on('close', () => {
-    wsConnected = false;
-    wsInstance  = null;
-    wsFailCount++;
-    console.warn(`⚠️ Binance WS closed (failures: ${wsFailCount}). Reconnecting in 5s...`);
-    // After 3 consecutive failures, try Bybit WS instead
-    if (wsFailCount >= 3) {
-      console.log('↩️ Switching to Bybit WebSocket after 3 Binance failures...');
-      wsReconnectTimer = setTimeout(connectBybitWS, 5000);
-    } else {
-      wsReconnectTimer = setTimeout(connectBinanceWS, 5000);
-    }
-  });
-
-  return ws;
-}
-
-// --- Bybit WebSocket fallback
+// --- Bybit WebSocket (primary — Binance is geo-blocked on Render with 451)
 function connectBybitWS() {
   const url = 'wss://stream.bybit.com/v5/public/spot';
-  console.log('🔌 Connecting to Bybit WebSocket (fallback)...');
+  console.log('🔌 Connecting to Bybit WebSocket...');
   const ws = new WebSocket(url);
 
   ws.on('open', () => {
@@ -398,17 +354,12 @@ function connectBybitWS() {
     wsSource    = 'bybit';
     wsFailCount = 0;
     wsInstance  = ws;
-    // Subscribe to BTCUSDT trade stream
-    ws.send(JSON.stringify({
-      op: 'subscribe',
-      args: ['publicTrade.BTCUSDT']
-    }));
+    ws.send(JSON.stringify({ op: 'subscribe', args: ['publicTrade.BTCUSDT'] }));
   });
 
   ws.on('message', (raw) => {
     try {
       const msg = JSON.parse(raw);
-      // Bybit trade stream: { topic: 'publicTrade.BTCUSDT', data: [{ p: price }] }
       if (msg.topic === 'publicTrade.BTCUSDT' && msg.data?.length > 0) {
         const price = parseFloat(msg.data[0].p);
         if (!isNaN(price)) onPriceTick(price);
@@ -425,16 +376,19 @@ function connectBybitWS() {
     wsConnected = false;
     wsInstance  = null;
     wsFailCount++;
-    console.warn(`⚠️ Bybit WS closed (failures: ${wsFailCount}). Reconnecting in 8s...`);
-    // If Bybit also keeps failing, alternate between both
-    if (wsFailCount >= 3) {
-      console.log('↩️ Retrying Binance WebSocket...');
-      wsFailCount = 0;
-      wsReconnectTimer = setTimeout(connectBinanceWS, 8000);
-    } else {
-      wsReconnectTimer = setTimeout(connectBybitWS, 8000);
-    }
+    const delay = Math.min(5000 * wsFailCount, 30000); // backoff: 5s, 10s, 15s... max 30s
+    console.warn(`⚠️ Bybit WS closed (failures: ${wsFailCount}). Reconnecting in ${delay/1000}s...`);
+    wsReconnectTimer = setTimeout(connectBybitWS, delay);
   });
+
+  // Bybit requires a ping every 20s to keep connection alive
+  const pingInterval = setInterval(() => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ op: 'ping' }));
+    } else {
+      clearInterval(pingInterval);
+    }
+  }, 20000);
 
   return ws;
 }
@@ -447,7 +401,6 @@ function startPollingFallback() {
   console.log('⚠️ WS down — starting REST polling fallback (every 10s)');
   pollingFallbackTimer = setInterval(async () => {
     if (wsConnected) {
-      // WS recovered — stop polling
       clearInterval(pollingFallbackTimer);
       pollingFallbackTimer = null;
       console.log('✅ WS reconnected — stopping REST fallback');
@@ -463,8 +416,8 @@ setInterval(() => {
   if (!wsConnected) startPollingFallback();
 }, 30000);
 
-// Start WebSocket on boot
-connectBinanceWS();
+// Start WebSocket on boot — Bybit only (Binance returns 451 on Render)
+connectBybitWS();
 
 // ================================================================
 // BUILT-IN RENDER KEEP-ALIVE PINGER
@@ -1241,6 +1194,6 @@ async function getRiskStatus() {
 app.listen(port, () => {
   console.log(`✅ Server running on port ${port}`);
   console.log(`📡 REST: Binance CDN → Bybit → CryptoCompare → CoinGecko`);
-  console.log(`🔌 WebSocket: Binance aggTrade → Bybit publicTrade (fallback)`);
+  console.log(`🔌 WebSocket: Bybit publicTrade (Binance skipped — geo-blocked on Render)`);
   console.log(`🏓 Self-pinger: every 4 min → ${SELF_URL}/ping`);
 });
