@@ -234,7 +234,7 @@
   <div id="trading-banner" class="trading-banner s-running">
     <div class="banner-left">
       <div class="banner-title" id="banner-title">▶️ Trading Active <span class="spill sp-run">RUNNING</span></div>
-      <div class="banner-hours" id="banner-hours">Trading Hours: 18:00 – 23:00 | Current: --:--</div>
+      <div class="banner-hours" id="banner-hours">Trading Hours: 18:00 – 23:00 | Current: --:-- | <span id="ws-status-badge" style="font-weight:600;">🔌 WS: connecting...</span></div>
     </div>
     <div class="banner-btns">
       <button id="btn-resume" class="btn btn-green" onclick="tradingAction('resume')" style="display:none">▶️ Resume</button>
@@ -491,13 +491,25 @@ function renderBanner(d) {
     bFX.style.display = 'inline-block';
   }
   const istTime = new Date().toLocaleTimeString('en-IN', {timeZone:'Asia/Kolkata', hour:'2-digit', minute:'2-digit', hour12:false});
+  let hoursText = '';
   if (s.force_start) {
-    hours.textContent = `Force Mode: 24/7 | Current: ${istTime} IST`;
+    hoursText = `Force Mode: 24/7 | Current: ${istTime} IST`;
   } else if (s.enabled) {
-    hours.textContent = `Trading Hours: ${String(s.start_hour).padStart(2,'0')}:00 – ${String(s.end_hour).padStart(2,'0')}:00 | Current: ${istTime} IST`;
+    hoursText = `Trading Hours: ${String(s.start_hour).padStart(2,'0')}:00 – ${String(s.end_hour).padStart(2,'0')}:00 | Current: ${istTime} IST`;
   } else {
-    hours.textContent = `Always Active (no hour restriction) | Current: ${istTime} IST`;
+    hoursText = `Always Active | Current: ${istTime} IST`;
   }
+  // ✅ WS status appended to banner hours
+  const wsEl = document.getElementById('ws-status-badge');
+  if (d.ws_connected) {
+    wsEl.innerHTML = `🟢 WS: ${d.ws_source || 'live'}`;
+    wsEl.style.color = 'var(--accent-green)';
+  } else {
+    wsEl.innerHTML = `🔴 WS: polling`;
+    wsEl.style.color = 'var(--accent-red)';
+  }
+  hours.textContent = hoursText + ' | ';
+  hours.appendChild(wsEl);
 }
 
 // ----- USDT/INR Rate -----
