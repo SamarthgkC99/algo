@@ -450,8 +450,14 @@ async function tradingAction(action) {
 
 async function syncBanner() {
   try {
-    const res = await fetch('/trading-control');
-    const d = await res.json();
+    const [tradingRes, wsRes] = await Promise.all([
+      fetch('/trading-control'),
+      fetch('/ws-status')
+    ]);
+    const d = await tradingRes.json();
+    const wsData = wsRes.ok ? await wsRes.json() : { connected: false, source: null };
+    d.ws_connected = wsData.connected;
+    d.ws_source    = wsData.source;
     renderBanner(d);
   } catch (e) { console.error('syncBanner:', e); }
 }
