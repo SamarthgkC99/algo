@@ -386,15 +386,18 @@
             <th>Type</th>
             <th>Entry $</th>
             <th>Stop-Loss $</th>
-            <th>Take-Profit $</th>
+            <th>TP1 $</th>
+            <th>TP2 $</th>
             <th>Exit $</th>
+            <th>Opened (IST)</th>
+            <th>Closed (IST)</th>
             <th>Duration</th>
             <th>Exit Reason</th>
             <th>P/L (₹)</th>
            </tr>
         </thead>
         <tbody id="history-body">
-          <tr><td colspan="8" style="text-align:center;color:var(--text-secondary);">No trades yet</td></tr>
+          <tr><td colspan="11" style="text-align:center;color:var(--text-secondary);">No trades yet</td></tr>
         </tbody>
       </table>
     </div>
@@ -907,7 +910,7 @@ async function fetchHistory() {
     const hist = await res.json();
     const tbody = document.getElementById('history-body');
     if (!hist.length) {
-      tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-secondary);">No trades yet</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--text-secondary);">No trades yet</td></tr>';
       return;
     }
     tbody.innerHTML = '';
@@ -927,17 +930,36 @@ async function fetchHistory() {
         tc.appendChild(pb);
       }
       row.insertCell().textContent = '$' + Number(t.entry_price).toFixed(2);
+      // SL
       const slc = row.insertCell();
       slc.textContent = t.stop_loss ? '$'+Number(t.stop_loss).toFixed(2) : '—';
       slc.style.color = 'var(--accent-red)';
-      const tpc = row.insertCell();
-      const tpPrice = t.tp1_price || (t.tp_levels && t.tp_levels[0] ? t.tp_levels[0].price : null);
-      tpc.textContent = tpPrice ? '$'+Number(tpPrice).toFixed(2) : '—';
-      tpc.style.color = 'var(--accent-green)';
+      // TP1
+      const tp1c = row.insertCell();
+      const tp1Price = t.tp1_price || (t.tp_levels?.[0]?.price) || null;
+      tp1c.textContent = tp1Price ? '$'+Number(tp1Price).toFixed(2) : '—';
+      tp1c.style.color = 'var(--accent-green)';
+      // TP2
+      const tp2c = row.insertCell();
+      const tp2Price = t.tp2_price || (t.tp_levels?.[1]?.price) || null;
+      tp2c.textContent = tp2Price ? '$'+Number(tp2Price).toFixed(2) : '—';
+      tp2c.style.color = 'var(--accent-blue)';
+      // Exit price
       row.insertCell().textContent = '$' + Number(t.exit_price).toFixed(2);
+      // ✅ Opened At IST
+      const openedCell = row.insertCell();
+      openedCell.style.fontSize = '0.72rem';
+      openedCell.style.color = 'var(--text-secondary)';
+      openedCell.textContent = t.opened_at_ist || (t.opened_at ? new Date(t.opened_at).toLocaleString('en-IN',{timeZone:'Asia/Kolkata'}) : '—');
+      // ✅ Closed At IST
+      const closedCell = row.insertCell();
+      closedCell.style.fontSize = '0.72rem';
+      closedCell.style.color = 'var(--text-secondary)';
+      closedCell.textContent = t.closed_at_ist || (t.closed_at ? new Date(t.closed_at).toLocaleString('en-IN',{timeZone:'Asia/Kolkata'}) : '—');
+      // Duration
       const dc = row.insertCell();
       if (t.opened_at && t.closed_at) {
-        const ms = new Date(t.closed_at) - new Date(t.opened_at);
+        const ms = t.duration_ms || (new Date(t.closed_at) - new Date(t.opened_at));
         dc.innerHTML = `<span class="dur-badge">${fmtDur(ms)}</span>`;
       } else { dc.innerHTML = '<span class="dur-badge">—</span>'; }
       const rc = row.insertCell();
