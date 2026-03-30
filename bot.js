@@ -9,6 +9,9 @@
 // ✅ Added: Condition-based cooldown after SL hit
 // ✅ Added: Asymmetric exit — LONG: 60% at TP1 trail rest; SHORT: 100% at TP1
 // ✅ Added: SL at 2.5×ATR; TP1 at 1.5×ATR, TP2 at 3×ATR
+// ✅ NEW:   Smart cooldown — 10min timer after SL + 0.4% distance filter from last entry
+// ✅ NEW:   After TP: no timer, only 0.4% distance check
+// ✅ NEW:   After opposite signal: 30s confirmation (unchanged)
 // ✅ NEW:   WebSocket price watcher — checks SL/TP on every tick (no more missed hits)
 // ✅ NEW:   Built-in self-pinger — keeps Render server awake every 4 minutes
 // ✅ NEW:   WebSocket fallback chain — Bybit WS (primary) → REST polling fallback
@@ -96,6 +99,8 @@ async function loadTrades() {
       last_closed_side: null,
       last_closed_sl_price: null,
       last_close_reason: null,
+      last_entry_price: null,       // ✅ NEW: for distance filter
+      last_entry_signal: null,      // ✅ NEW: 'Buy' or 'Sell' — direction of last entry
       pending_opposite_side: null,
       pending_opposite_time: null
     };
@@ -188,10 +193,21 @@ async function loadRiskConfig() {
         short: { tp_atr_multipliers: [1.5] }
       },
       cooldown: {
+        // After SL hit: 10 min timer + 0.4% distance check from last entry
         sl_condition_based: true,
+        sl_cooldown_ms: 600000,          // 10 minutes after SL hit
+        sl_fallback_ms: 600000,          // same — fallback = full timer
+
+        // After TP hit: no timer, only distance check
         tp_cooldown_ms: 0,
-        opposite_confirmation_ms: 30000,
-        sl_fallback_ms: 120000
+
+        // Distance filter — same-side re-entry only allowed if price
+        // hasn't moved more than 0.4% from last entry price
+        distance_filter_enabled: true,
+        distance_filter_pct: 0.4,        // 0.4% = best balance for BTC 5m scalping
+
+        // After opposite signal: 30s confirmation window
+        opposite_confirmation_ms: 30000
       }
     };
     await saveRiskConfig(defaultConfig);
@@ -820,38 +836,96 @@ async function closePartialPosition(data, openTrade, currentPrice, partialPct, r
   return { tradeRecord };
 }
 
-// ------------------------------
-// Condition-Based Cooldown Check
-// ------------------------------
+// ================================================================
+// SMART COOLDOWN + DISTANCE FILTER
+// Three-layer re-entry engine:
+//
+// Layer 1 — After SL hit (same side):
+//   → Block for 10 minutes (sl_cooldown_ms)
+//   → After timer: check 0.4% distance from last entry price
+//   → If price moved < 0.4% → allow (move still fresh)
+//   → If price moved > 0.4% → skip (move exhausted, chasing price)
+//
+// Layer 2 — After TP hit (same side):
+//   → No timer (winners don't need a penalty)
+//   → Only check 0.4% distance from last entry price
+//
+// Layer 3 — Opposite signal:
+//   → 30s confirmation window (unchanged)
+// ================================================================
 function checkCooldown(data, signal, currentPrice, cooldownConfig) {
-  const now = Date.now();
+  const now     = Date.now();
+  const cfg     = cooldownConfig;
+
+  // No previous close — open freely
   if (!data.last_closed_side) return { canOpen: true, reason: null };
+
   const sameSide = (data.last_closed_side === signal);
 
   if (sameSide) {
-    if (data.last_close_reason === 'sl' && cooldownConfig.sl_condition_based) {
-      const slPrice = data.last_closed_sl_price;
-      const elapsed = now - data.last_closed_time;
-      if (elapsed >= cooldownConfig.sl_fallback_ms) return { canOpen: true, reason: null };
-      if (slPrice) {
-        const priceCleared = signal === 'Buy' ? currentPrice > slPrice : currentPrice < slPrice;
-        if (priceCleared) return { canOpen: true, reason: null };
-        const remaining = Math.ceil((cooldownConfig.sl_fallback_ms - elapsed) / 1000);
-        return { canOpen: false, reason: `⛔ SL cooldown: price must clear $${slPrice.toFixed(2)} for ${signal} (fallback in ${remaining}s)` };
+    const closeReason   = data.last_close_reason;  // 'sl', 'tp', 'signal', 'force'
+    const lastEntryPrice = data.last_entry_price;
+    const elapsed        = now - data.last_closed_time;
+
+    // ── Layer 1: After SL hit ──────────────────────────────────────────────
+    if (closeReason === 'sl') {
+      // Step 1: Timer check — must wait sl_cooldown_ms (10 min)
+      if (elapsed < cfg.sl_cooldown_ms) {
+        const remaining = Math.ceil((cfg.sl_cooldown_ms - elapsed) / 1000);
+        const mins = Math.floor(remaining / 60);
+        const secs = remaining % 60;
+        const timeStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+        return {
+          canOpen: false,
+          reason: `⏳ SL cooldown: ${timeStr} remaining before re-entry allowed`
+        };
+      }
+
+      // Step 2: Distance filter — check if price is still fresh
+      if (cfg.distance_filter_enabled && lastEntryPrice) {
+        const distancePct = Math.abs(currentPrice - lastEntryPrice) / lastEntryPrice * 100;
+        if (distancePct > cfg.distance_filter_pct) {
+          return {
+            canOpen: false,
+            reason: `⛔ Distance filter: price moved ${distancePct.toFixed(2)}% from last entry $${lastEntryPrice.toFixed(2)} (max ${cfg.distance_filter_pct}% — move exhausted)`
+          };
+        }
+      }
+      // Both checks passed
+      return { canOpen: true, reason: null };
+    }
+
+    // ── Layer 2: After TP hit or signal close ─────────────────────────────
+    // No timer — only distance check
+    if (cfg.distance_filter_enabled && lastEntryPrice) {
+      const distancePct = Math.abs(currentPrice - lastEntryPrice) / lastEntryPrice * 100;
+      if (distancePct > cfg.distance_filter_pct) {
+        return {
+          canOpen: false,
+          reason: `⛔ Distance filter: price moved ${distancePct.toFixed(2)}% from last entry $${lastEntryPrice.toFixed(2)} — skipping late entry`
+        };
       }
     }
     return { canOpen: true, reason: null };
+
   } else {
+    // ── Layer 3: Opposite side — 30s confirmation ─────────────────────────
     if (data.pending_opposite_side === signal) {
       const elapsed = now - data.pending_opposite_time;
-      if (elapsed >= cooldownConfig.opposite_confirmation_ms) return { canOpen: true, reason: null };
-      const remaining = Math.ceil((cooldownConfig.opposite_confirmation_ms - elapsed) / 1000);
-      return { canOpen: false, reason: `⏳ Opposite confirmation: ${remaining}s remaining for ${signal}` };
+      if (elapsed >= cfg.opposite_confirmation_ms) return { canOpen: true, reason: null };
+      const remaining = Math.ceil((cfg.opposite_confirmation_ms - elapsed) / 1000);
+      return {
+        canOpen: false,
+        reason: `⏳ Opposite confirmation: ${remaining}s remaining for ${signal}`
+      };
     } else {
       data.pending_opposite_side = signal;
       data.pending_opposite_time = now;
-      const secs = Math.ceil(cooldownConfig.opposite_confirmation_ms / 1000);
-      return { canOpen: false, reason: `⏳ Opposite signal ${signal} detected — confirming for ${secs}s` };
+      const secs = Math.ceil(cfg.opposite_confirmation_ms / 1000);
+      return {
+        canOpen: false,
+        reason: `⏳ Opposite signal ${signal} detected — confirming for ${secs}s`
+      };
     }
   }
 }
@@ -914,7 +988,11 @@ async function updateDemoTrade(signal, price, atrValue, utbotStop) {
         }
       }
 
-      const cooldownCfg = config.cooldown || { sl_condition_based: true, tp_cooldown_ms: 0, opposite_confirmation_ms: 30000, sl_fallback_ms: 120000 };
+      const cooldownCfg = config.cooldown || {
+        sl_condition_based: true, sl_cooldown_ms: 600000, sl_fallback_ms: 600000,
+        tp_cooldown_ms: 0, distance_filter_enabled: true, distance_filter_pct: 0.4,
+        opposite_confirmation_ms: 30000
+      };
       const { canOpen, reason: cooldownReason } = checkCooldown(data, signal, price, cooldownCfg);
 
       if (canOpen) {
@@ -945,8 +1023,11 @@ async function updateDemoTrade(signal, price, atrValue, utbotStop) {
         logEntry.tp1       = tp1Price;
         actionMessage += (signal === 'Buy' ? '🟢 OPENED LONG' : '🔴 OPENED SHORT') +
           ` @ $${price.toFixed(2)} | Size: ${positionSize} BTC | SL: $${stopLoss?.toFixed(2) || 'N/A'} | TP1: $${tp1Price?.toFixed(2) || 'N/A'}`;
-        logEntry.action  = signal === 'Buy' ? 'OPEN_LONG' : 'OPEN_SHORT';
-        data.last_signal = signal;
+        logEntry.action       = signal === 'Buy' ? 'OPEN_LONG' : 'OPEN_SHORT';
+        data.last_signal      = signal;
+        // ✅ Store entry price and direction for distance filter on next re-entry
+        data.last_entry_price  = price;
+        data.last_entry_signal = signal;
       } else {
         actionMessage = cooldownReason || 'Cooldown active';
         logEntry.action = 'COOLDOWN';
@@ -1198,7 +1279,8 @@ app.post('/clear-history', async (req, res) => {
     Object.assign(data, {
       history: [], order_log: [], balance: START_BALANCE, open_trade: null,
       last_closed_time: null, last_closed_side: null, last_closed_sl_price: null,
-      last_close_reason: null, pending_opposite_side: null, pending_opposite_time: null
+      last_close_reason: null, last_entry_price: null, last_entry_signal: null,
+      pending_opposite_side: null, pending_opposite_time: null
     });
     await saveTrades(data);
     await resetRiskState();
