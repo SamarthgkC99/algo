@@ -628,6 +628,17 @@ async function loadPositionMethod() {
     else if (method === 'fixed')  statusText = `⬤ Fixed lot: ${cfg.position_sizing.value} BTC`;
     else                          statusText = `⬤ Risk per trade: ₹${cfg.position_sizing.risk_amount}`;
     setSt('st-pos', 'dim', statusText);
+
+    // ✅ Restore RR mode from saved config so it persists across refreshes
+    if (cfg.rr_mode && cfg.rr_mode !== 'none') {
+      currentRR = cfg.rr_mode;
+      const idMap = { 'none':'rr-none', '1:1':'rr-1_1', '1:1.5':'rr-1_1_5', '1:2':'rr-1_2', '1:3':'rr-1_3' };
+      Object.values(idMap).forEach(id => document.getElementById(id)?.classList.remove('active'));
+      if (idMap[currentRR]) document.getElementById(idMap[currentRR])?.classList.add('active');
+      document.getElementById('rr-active-lbl').textContent = currentRR;
+      setSt('st-rr', 'ok', `✅ RR ${currentRR} active`);
+    }
+
   } catch(e) { console.error('loadPositionMethod:', e); }
 }
 
@@ -770,12 +781,12 @@ async function pushRRToBot() {
     const cfg = await (await fetch('/risk-config')).json();
     cfg.stop_loss.atr_multiplier = slMult;
     cfg.take_profit.levels = [
-      { percentage: 100, atr_multiplier: tpMult, name: 'TP1' },
-      { percentage: 0, atr_multiplier: tpMult * 1.5, name: 'TP2' },
-      { percentage: 0, atr_multiplier: tpMult * 2, name: 'TP3' }
+      { percentage: 60, atr_multiplier: tpMult, name: 'TP1' },
+      { percentage: 40, atr_multiplier: tpMult * 2, name: 'TP2' }
     ];
-    cfg.different_rules_for_position_type.long.tp_atr_multipliers = [tpMult, tpMult*1.5, tpMult*2];
-    cfg.different_rules_for_position_type.short.tp_atr_multipliers = [tpMult, tpMult*1.5, tpMult*2];
+    cfg.different_rules_for_position_type.long.tp_atr_multipliers = [tpMult, tpMult * 2];
+    cfg.different_rules_for_position_type.short.tp_atr_multipliers = [tpMult];
+    cfg.rr_mode = currentRR;
     const r = await fetch('/risk-config',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(cfg) });
     const d = await r.json();
     if (d.success) setSt('st-rr','ok',`✅ RR ${currentRR} active — TP at ${tpMult.toFixed(2)}× ATR`);
