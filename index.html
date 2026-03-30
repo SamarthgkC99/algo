@@ -223,6 +223,25 @@
     .chart-container { grid-column: 1/-1; }
     .chart-wrapper { height: 380px; }
   }
+  .health-bar {
+    grid-column: 1/-1;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    padding: 10px 18px;
+    display: flex;
+    gap: 24px;
+    align-items: center;
+    flex-wrap: wrap;
+    font-size: 0.76rem;
+  }
+  .health-item { display: flex; align-items: center; gap: 7px; }
+  .health-label { color: var(--text-secondary); }
+  .health-val { font-weight: 600; color: var(--text-primary); }
+  .h-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .h-green { background: var(--accent-green); box-shadow: 0 0 6px var(--accent-green); }
+  .h-red   { background: var(--accent-red);   box-shadow: 0 0 6px var(--accent-red); }
+  .h-yellow{ background: var(--accent-yellow); box-shadow: 0 0 6px var(--accent-yellow); }
 </style>
 </head>
 <body>
@@ -241,6 +260,32 @@
       <button id="btn-stop" class="btn btn-red" onclick="tradingAction('pause')">⏹ Stop Trading</button>
       <button id="btn-force-start" class="btn btn-orange" onclick="tradingAction('force_start')">🔥 Force Start</button>
       <button id="btn-force-stop" class="btn btn-darkred" onclick="tradingAction('force_stop')">🛑 Force Stop & Close</button>
+    </div>
+  </div>
+
+  <!-- Health Bar -->
+  <div class="health-bar" id="health-bar">
+    <div class="health-item">
+      <span class="h-dot h-yellow" id="ws-dot"></span>
+      <span class="health-label">WebSocket</span>
+      <span class="health-val" id="hb-ws">connecting...</span>
+    </div>
+    <div class="health-item">
+      <span class="h-dot h-yellow" id="ping-dot"></span>
+      <span class="health-label">Self-Ping</span>
+      <span class="health-val" id="hb-ping">—</span>
+    </div>
+    <div class="health-item">
+      <span class="health-label">Live Price</span>
+      <span class="health-val" id="hb-price">—</span>
+    </div>
+    <div class="health-item">
+      <span class="health-label">Last Signal Check</span>
+      <span class="health-val" id="hb-signal-time">—</span>
+    </div>
+    <div class="health-item">
+      <span class="health-label">Cron URL</span>
+      <span class="health-val" style="color:var(--accent-yellow);">→ use /signal not /ping</span>
     </div>
   </div>
 
@@ -823,6 +868,8 @@ async function fetchAndUpdate() {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const d = await res.json();
     lastData = d;
+    lastSignalCheckTime = new Date();
+    document.getElementById('hb-signal-time').textContent = 'just now';
     if (d.atr) { lastATR = d.atr; if (currentRR !== 'none') updateRRPreview(); }
     document.getElementById('price').textContent = '$' + d.price.toFixed(2);
     const sigEl = document.getElementById('signal');
@@ -1186,6 +1233,61 @@ function setSt(id, type, msg) {
   el.textContent = msg;
 }
 
+// ----- Health Bar -----
+let lastSignalCheckTime = null;
+
+async function fetchHealth() {
+  try {
+    const res = await fetch('/ws-status');
+    if (!res.ok) return;
+    const d = await res.json();
+
+    // WS status
+    const wsDot = document.getElementById('ws-dot');
+    const hbWs  = document.getElementById('hb-ws');
+    if (d.connected) {
+      wsDot.className = 'h-dot h-green';
+      hbWs.textContent = `✅ ${d.source || 'live'}`;
+      hbWs.style.color = 'var(--accent-green)';
+    } else {
+      wsDot.className = 'h-dot h-red';
+      hbWs.textContent = '❌ disconnected — polling fallback';
+      hbWs.style.color = 'var(--accent-red)';
+    }
+
+    // Live price from WS
+    const hbPrice = document.getElementById('hb-price');
+    hbPrice.textContent = d.live_price ? `$${Number(d.live_price).toFixed(2)}` : '—';
+
+    // Last WS check time
+    if (d.last_check && d.last_check !== '1970-01-01T00:00:00.000Z') {
+      const ago = Math.floor((Date.now() - new Date(d.last_check)) / 1000);
+      document.getElementById('hb-signal-time').textContent = `${ago}s ago`;
+    }
+  } catch(e) { /* silent */ }
+
+  // Self-ping status — check /ping endpoint directly
+  try {
+    const pingStart = Date.now();
+    const pr = await fetch('/ping');
+    const pingMs = Date.now() - pingStart;
+    const pingDot = document.getElementById('ping-dot');
+    const hbPing  = document.getElementById('hb-ping');
+    if (pr.ok) {
+      pingDot.className = 'h-dot h-green';
+      hbPing.textContent = `✅ ${pingMs}ms`;
+      hbPing.style.color = 'var(--accent-green)';
+    } else {
+      pingDot.className = 'h-dot h-red';
+      hbPing.textContent = '❌ failed';
+      hbPing.style.color = 'var(--accent-red)';
+    }
+  } catch(e) {
+    document.getElementById('ping-dot').className = 'h-dot h-red';
+    document.getElementById('hb-ping').textContent = '❌ unreachable';
+  }
+}
+
 // ----- Initialisation -----
 document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('pos-method').addEventListener('change', () => {
@@ -1204,11 +1306,13 @@ document.addEventListener('DOMContentLoaded', () => {
   fetchAndUpdate();
   fetchHistory();
   fetchUSDTINR();
+  fetchHealth();
 
   setInterval(fetchAndUpdate, 5000);
   setInterval(fetchHistory, 12000);
   setInterval(refreshChart, 30000);
   setInterval(syncBanner, 10000);
+  setInterval(fetchHealth, 15000);  // health check every 15s
 });
 </script>
 </body>
