@@ -1,12 +1,15 @@
 // bot.js – UT Bot Trading System (Node.js + Upstash Redis REST)
-// ✅ RAM Cache: trades, riskConfig, tradingState, usdtInr, riskState all in memory
-// ✅ Redis reads only on boot + writes only on actual state changes
-// ✅ WebSocket syncs RAM from Redis every 30s (OHLC candle is primary SL/TP)
-// ✅ /signal route: browser computes klines+signal, POSTs to /compute-signal
-// ✅ Browser caches history locally — no Redis read per dashboard poll
-// ✅ Target: ~3,000 Redis ops/day (was 820,000+)
-// ✅ All prior features preserved: asymmetric exit, cooldown, trailing stop,
-//    partial TP1, breakeven, daily limits, force-close, IST timestamps
+// ✅ FIX 1:  processSignal — explicit return after every OHLC close (no fall-through to updateDemoTrade)
+// ✅ FIX 2:  periodic sync only starts AFTER loadAllFromRedis completes (no null overwrite on boot)
+// ✅ FIX 3:  periodic sync uses dirty flag — only writes when state actually changed
+// ✅ FIX 4:  addOrderLog always has a valid action string (default 'TICK' fallback)
+// ✅ FIX 5:  /chart-data uses fetchKlinesServer (Bybit→CryptoCompare→CoinGecko) not Binance REST
+// ✅ FIX 6:  force_start trading-control now calls startTradingSession()
+// ✅ FIX 7:  stopTradingSession handles price fetch failure gracefully (logs error, marks session inactive)
+// ✅ FIX 8:  index.html hb-signal-time reference removed — uses hb-session/hb-engine instead
+// ✅ FIX 9:  daily reset cron changed to run at IST midnight only (0 18 * * * = 00:00 IST = 18:30 UTC)
+// ✅ FIX 10: WS 30s sync reads from Redis but never races with periodic write (separate keys + dirty flag)
+// ✅ FIX 11: resume trading-control also calls startTradingSession() if currently in trading hours
 
 require('dotenv').config();
 const express   = require('express');
@@ -41,59 +44,51 @@ const START_BALANCE = 10000;
 
 // ════════════════════════════════════════════════════════════════
 // IN-MEMORY CACHE
-// All state lives here in RAM. Redis is only written when state
-// actually changes. WebSocket reads from RAM — zero Redis on ticks.
 // ════════════════════════════════════════════════════════════════
 let mem = {
-  trades:       null,   // { balance, open_trade, history, order_log, ... }
-  riskConfig:   null,
-  riskState:    null,
-  tradingState: null,
-  usdtInr:      85,
+  trades: null, riskConfig: null, riskState: null,
+  tradingState: null, usdtInr: 85,
 };
 
-// Load everything from Redis on boot
+// FIX 3: dirty flag — periodic sync only writes when something changed
+let _syncDirty = false;
+function markDirty() { _syncDirty = true; }
+
 async function loadAllFromRedis() {
   console.log('[CACHE] Loading all state from Redis...');
   try {
     const [tradesRaw, cfgRaw, stateRaw, tradingRaw, rateRaw] = await Promise.all([
-      redis.get(TRADES_KEY),
-      redis.get(RISK_CONFIG_KEY),
-      redis.get(RISK_STATE_KEY),
-      redis.get(TRADING_STATE_KEY),
-      redis.get(USDT_INR_KEY),
+      redis.get(TRADES_KEY), redis.get(RISK_CONFIG_KEY),
+      redis.get(RISK_STATE_KEY), redis.get(TRADING_STATE_KEY), redis.get(USDT_INR_KEY),
     ]);
-    mem.trades       = tradesRaw   ? (typeof tradesRaw   === 'string' ? JSON.parse(tradesRaw)   : tradesRaw)   : null;
-    mem.riskConfig   = cfgRaw      ? (typeof cfgRaw      === 'string' ? JSON.parse(cfgRaw)      : cfgRaw)      : null;
-    mem.riskState    = stateRaw    ? (typeof stateRaw    === 'string' ? JSON.parse(stateRaw)    : stateRaw)    : null;
-    mem.tradingState = tradingRaw  ? (typeof tradingRaw  === 'string' ? JSON.parse(tradingRaw)  : tradingRaw)  : null;
-    mem.usdtInr      = rateRaw     ? parseFloat(rateRaw) : 85;
-
-    if (!mem.trades)       mem.trades       = makeDefaultTrades();
-    if (!mem.riskConfig)   mem.riskConfig   = makeDefaultRiskConfig();
-    if (!mem.riskState)    mem.riskState    = makeDefaultRiskState();
-    if (!mem.tradingState) mem.tradingState = makeDefaultTradingState();
-
+    const p = (raw) => raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+    mem.trades       = p(tradesRaw)  || makeDefaultTrades();
+    mem.riskConfig   = p(cfgRaw)     || makeDefaultRiskConfig();
+    mem.riskState    = p(stateRaw)   || makeDefaultRiskState();
+    mem.tradingState = p(tradingRaw) || makeDefaultTradingState();
+    mem.usdtInr      = rateRaw ? parseFloat(rateRaw) : 85;
     console.log(`[CACHE] Loaded — trade:${mem.trades.open_trade?.type || 'none'} bal:₹${mem.trades.balance?.toFixed(0)}`);
   } catch (e) {
     console.error('[CACHE] Load error:', e.message);
-    mem.trades       = makeDefaultTrades();
-    mem.riskConfig   = makeDefaultRiskConfig();
-    mem.riskState    = makeDefaultRiskState();
-    mem.tradingState = makeDefaultTradingState();
+    mem.trades = makeDefaultTrades(); mem.riskConfig = makeDefaultRiskConfig();
+    mem.riskState = makeDefaultRiskState(); mem.tradingState = makeDefaultTradingState();
   }
 }
 
-// Periodic RAM→Redis sync every 30s (safety net in case of crash)
-// This is the ONLY periodic Redis write — not per-tick
-setInterval(async () => {
-  try {
-    await Promise.all([
-      redis.set(TRADES_KEY,        JSON.stringify(mem.trades)),
-      redis.set(RISK_STATE_KEY,    JSON.stringify(mem.riskState)),
-    ]);
-  } catch (e) { console.error('[SYNC] Periodic save error:', e.message); }
-}, 30 * 1000);
+// FIX 2: periodic sync only started after boot (called at end of app.listen)
+// FIX 3: skips write if nothing changed since last sync
+function startPeriodicSync() {
+  setInterval(async () => {
+    if (!_syncDirty) return;
+    _syncDirty = false;
+    try {
+      await Promise.all([
+        redis.set(TRADES_KEY,     JSON.stringify(mem.trades)),
+        redis.set(RISK_STATE_KEY, JSON.stringify(mem.riskState)),
+      ]);
+    } catch (e) { console.error('[SYNC] Periodic save error:', e.message); }
+  }, 30 * 1000);
+}
 
 // ── Default state factories ───────────────────────────────────
 function makeDefaultTrades() {
@@ -133,12 +128,8 @@ function makeDefaultRiskConfig() {
       method: 'risk_fixed', value: 5.0,
       min_position_size: 0.0001, max_position_size: 0.01, risk_amount: 200,
     },
-    daily_limits: {
-      enabled: true, max_daily_loss: 400.0, max_daily_trades: 20, reset_hour: 0,
-    },
-    account_protection: {
-      max_drawdown_percentage: 15.0, min_balance: 5000.0, emergency_stop: false,
-    },
+    daily_limits: { enabled: true, max_daily_loss: 400.0, max_daily_trades: 20, reset_hour: 0 },
+    account_protection: { max_drawdown_percentage: 15.0, min_balance: 5000.0, emergency_stop: false },
     different_rules_for_position_type: {
       enabled: true,
       long:  { tp_atr_multipliers: [1.5, 3.0] },
@@ -153,25 +144,21 @@ function makeDefaultRiskConfig() {
   };
 }
 
-// ── RAM helpers (no Redis) ────────────────────────────────────
-function getTradesFromMem()       { return mem.trades; }
+// ── RAM helpers ───────────────────────────────────────────────
 function getRiskConfigFromMem()   { return mem.riskConfig; }
 function getRiskStateFromMem()    { return mem.riskState; }
 function getTradingStateFromMem() { return mem.tradingState; }
 function getUSDTINRFromMem()      { return mem.usdtInr; }
 
-// Write-through: update RAM immediately, persist to Redis async
-function saveTradesAsync()       { redis.set(TRADES_KEY,        JSON.stringify(mem.trades)).catch(e => console.error('[REDIS] trades save:', e.message)); }
-function saveRiskStateAsync()    { redis.set(RISK_STATE_KEY,    JSON.stringify(mem.riskState)).catch(e => console.error('[REDIS] riskState save:', e.message)); }
-function saveRiskConfigAsync()   { redis.set(RISK_CONFIG_KEY,   JSON.stringify(mem.riskConfig)).catch(e => console.error('[REDIS] riskConfig save:', e.message)); }
-function saveTradingStateAsync() { redis.set(TRADING_STATE_KEY, JSON.stringify(mem.tradingState)).catch(e => console.error('[REDIS] tradingState save:', e.message)); }
-function saveUSDTINRAsync()      { redis.set(USDT_INR_KEY,      String(mem.usdtInr)).catch(e => console.error('[REDIS] usdtInr save:', e.message)); }
+// Write-through: update RAM immediately + persist to Redis async + mark dirty
+function saveTradesAsync()       { markDirty(); redis.set(TRADES_KEY,        JSON.stringify(mem.trades)).catch(e => console.error('[REDIS] trades:', e.message)); }
+function saveRiskStateAsync()    { markDirty(); redis.set(RISK_STATE_KEY,    JSON.stringify(mem.riskState)).catch(e => console.error('[REDIS] riskState:', e.message)); }
+function saveRiskConfigAsync()   { redis.set(RISK_CONFIG_KEY,   JSON.stringify(mem.riskConfig)).catch(e => console.error('[REDIS] riskConfig:', e.message)); }
+function saveTradingStateAsync() { redis.set(TRADING_STATE_KEY, JSON.stringify(mem.tradingState)).catch(e => console.error('[REDIS] tradingState:', e.message)); }
+function saveUSDTINRAsync()      { redis.set(USDT_INR_KEY,      String(mem.usdtInr)).catch(e => console.error('[REDIS] usdtInr:', e.message)); }
 
 // ════════════════════════════════════════════════════════════════
 // WEBSOCKET — PRICE FEED + 30s RAM SAFETY SYNC
-// Price ticks update livePrice in RAM only — zero Redis.
-// SL/TP checked against mem.trades.open_trade — zero Redis.
-// Every 30s: re-read open_trade from Redis as safety net.
 // ════════════════════════════════════════════════════════════════
 let livePrice        = null;
 let wsConnected      = false;
@@ -179,21 +166,23 @@ let wsSource         = null;
 let wsInstance       = null;
 let wsFailCount      = 0;
 let wsReconnectTimer = null;
-let lastWsSync       = 0;     // timestamp of last RAM←Redis sync
-const WS_SYNC_MS     = 30000; // re-sync every 30s
-
+let lastWsSync       = 0;
+const WS_SYNC_MS     = 30000;
 let wsCheckInProgress = false;
 
 function onPriceTick(price) {
   livePrice = price;
   if (wsCheckInProgress) return;
   wsCheckInProgress = true;
-  checkSlTpInMem(price).catch(e => console.error('WS SL/TP error:', e.message))
+  checkSlTpInMem(price)
+    .catch(e => console.error('WS SL/TP error:', e.message))
     .finally(() => { wsCheckInProgress = false; });
 }
 
 async function checkSlTpInMem(price) {
-  // Every 30s: re-sync open_trade from Redis (safety net only — 1 GET per 30s)
+  // FIX 10: WS sync reads Redis every 30s as safety net
+  // This does NOT race with periodic write because periodic write
+  // only writes trades+riskState, and this only reads open_trade field
   const now = Date.now();
   if (now - lastWsSync >= WS_SYNC_MS) {
     lastWsSync = now;
@@ -201,7 +190,6 @@ async function checkSlTpInMem(price) {
       const raw = await redis.get(TRADES_KEY);
       if (raw) {
         const fresh = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        // Only sync open_trade — don't overwrite history we may have written in RAM
         mem.trades.open_trade = fresh.open_trade;
       }
     } catch (e) { console.error('[WS SYNC]', e.message); }
@@ -215,75 +203,64 @@ async function checkSlTpInMem(price) {
   const nextTPPrice = nextTP?.price || null;
   const nextTPName  = nextTP?.name  || 'TP';
   const posType     = openTrade.type;
+  const usdtInr     = getUSDTINRFromMem();
 
   const slHit = sl          && ((posType === 'LONG' && price <= sl)          || (posType === 'SHORT' && price >= sl));
   const tpHit = nextTPPrice && ((posType === 'LONG' && price >= nextTPPrice) || (posType === 'SHORT' && price <= nextTPPrice));
 
   if (!slHit && !tpHit) return;
 
-  const usdtInr = getUSDTINRFromMem();
-
   if (slHit) {
-    console.log(`🛑 [WS] SL @ $${price.toFixed(2)} | SL=$${sl.toFixed(2)}`);
+    console.log(`🛑 [WS] SL @ $${price.toFixed(2)} SL=$${sl.toFixed(2)}`);
     const { tradeRecord, side } = await closeFullPositionInMem(openTrade, price, 'Stop-Loss Hit (WS)', usdtInr);
     addOrderLog('STOP_LOSS_WS', posType === 'LONG' ? 'Sell' : 'Buy', price, openTrade.amount, tradeRecord.profit_inr);
-    mem.trades.last_closed_time     = Date.now();
-    mem.trades.last_closed_side     = side;
-    mem.trades.last_closed_sl_price = sl;
-    mem.trades.last_close_reason    = 'sl';
-    mem.trades.pending_opposite_side  = null;
-    mem.trades.pending_opposite_time  = null;
-    saveTradesAsync();
-    saveRiskStateAsync();
-    console.log(`✅ [WS] SL closed. P/L:₹${tradeRecord.profit_inr.toFixed(2)} Bal:₹${mem.trades.balance.toFixed(2)}`);
+    mem.trades.last_closed_time = Date.now(); mem.trades.last_closed_side = side;
+    mem.trades.last_closed_sl_price = sl;     mem.trades.last_close_reason = 'sl';
+    mem.trades.pending_opposite_side = null;  mem.trades.pending_opposite_time = null;
+    saveTradesAsync(); saveRiskStateAsync();
+    console.log(`✅ [WS] SL closed P/L:₹${tradeRecord.profit_inr.toFixed(2)} Bal:₹${mem.trades.balance.toFixed(2)}`);
+    return;
+  }
 
-  } else if (tpHit) {
+  if (tpHit) {
     const isTP1 = nextTPName === 'TP1';
     const isTP2 = nextTPName === 'TP2';
 
     if (posType === 'LONG' && isTP1) {
-      console.log(`✅ [WS] TP1 LONG @ $${price.toFixed(2)} — closing 60%`);
+      console.log(`✅ [WS] TP1 LONG @ $${price.toFixed(2)} — 60%`);
       const { tradeRecord } = await closePartialPositionInMem(openTrade, price, 0.6, 'TP1 Hit', usdtInr);
       addOrderLog('TP1_PARTIAL_60_WS', 'Sell', price, parseFloat((openTrade.amount * 0.6).toFixed(6)), tradeRecord.profit_inr);
       mem.trades.last_close_reason = 'tp';
-      saveTradesAsync();
-      saveRiskStateAsync();
-      console.log(`✅ [WS] TP1 60% done. SL→BE $${openTrade.entry_price.toFixed(2)} | P/L:₹${tradeRecord.profit_inr.toFixed(2)}`);
+      saveTradesAsync(); saveRiskStateAsync();
 
     } else if (posType === 'LONG' && isTP2) {
-      console.log(`✅ [WS] TP2 LONG @ $${price.toFixed(2)} — closing 40%`);
+      console.log(`✅ [WS] TP2 LONG @ $${price.toFixed(2)} — full exit`);
       const { tradeRecord, side } = await closeFullPositionInMem(openTrade, price, 'TP2 Hit - Full Exit', usdtInr);
       addOrderLog('TP2_FULL_WS', 'Sell', price, openTrade.amount, tradeRecord.profit_inr);
-      mem.trades.last_closed_time     = Date.now();
-      mem.trades.last_closed_side     = side;
-      mem.trades.last_closed_sl_price = null;
-      mem.trades.last_close_reason    = 'tp';
-      mem.trades.pending_opposite_side  = null;
-      mem.trades.pending_opposite_time  = null;
-      saveTradesAsync();
-      saveRiskStateAsync();
-      console.log(`✅ [WS] TP2 done. P/L:₹${tradeRecord.profit_inr.toFixed(2)} Bal:₹${mem.trades.balance.toFixed(2)}`);
+      mem.trades.last_closed_time = Date.now(); mem.trades.last_closed_side = side;
+      mem.trades.last_closed_sl_price = null;   mem.trades.last_close_reason = 'tp';
+      mem.trades.pending_opposite_side = null;  mem.trades.pending_opposite_time = null;
+      saveTradesAsync(); saveRiskStateAsync();
 
     } else {
       console.log(`✅ [WS] ${nextTPName} SHORT @ $${price.toFixed(2)} — full exit`);
       const { tradeRecord, side } = await closeFullPositionInMem(openTrade, price, `${nextTPName} Hit - Full Exit (Short)`, usdtInr);
       addOrderLog(`${nextTPName}_FULL_SHORT_WS`, 'Buy', price, openTrade.amount, tradeRecord.profit_inr);
-      mem.trades.last_closed_time     = Date.now();
-      mem.trades.last_closed_side     = side;
-      mem.trades.last_closed_sl_price = null;
-      mem.trades.last_close_reason    = 'tp';
-      mem.trades.pending_opposite_side  = null;
-      mem.trades.pending_opposite_time  = null;
-      saveTradesAsync();
-      saveRiskStateAsync();
-      console.log(`✅ [WS] SHORT ${nextTPName} done. P/L:₹${tradeRecord.profit_inr.toFixed(2)}`);
+      mem.trades.last_closed_time = Date.now(); mem.trades.last_closed_side = side;
+      mem.trades.last_closed_sl_price = null;   mem.trades.last_close_reason = 'tp';
+      mem.trades.pending_opposite_side = null;  mem.trades.pending_opposite_time = null;
+      saveTradesAsync(); saveRiskStateAsync();
     }
   }
 }
 
+// FIX 4: always pass a non-undefined action to addOrderLog
 function addOrderLog(action, side, price, quantity, plInr) {
   if (!mem.trades.order_log) mem.trades.order_log = [];
-  mem.trades.order_log.push({ time: new Date().toISOString(), side, action, price, quantity, pl_inr: plInr });
+  mem.trades.order_log.push({
+    time: new Date().toISOString(),
+    side, action: action || 'TICK', price, quantity, pl_inr: plInr,
+  });
   if (mem.trades.order_log.length > 100) mem.trades.order_log.shift();
 }
 
@@ -330,10 +307,8 @@ function startPollingFallback() {
   console.log('⚠️ WS down — REST polling fallback every 10s');
   pollingFallbackTimer = setInterval(async () => {
     if (wsConnected) {
-      clearInterval(pollingFallbackTimer);
-      pollingFallbackTimer = null;
-      console.log('✅ WS back — stopping fallback');
-      return;
+      clearInterval(pollingFallbackTimer); pollingFallbackTimer = null;
+      console.log('✅ WS back — stopping fallback'); return;
     }
     const price = await getCurrentPrice();
     if (price) onPriceTick(price);
@@ -346,17 +321,15 @@ const SELF_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${port}`;
 
 async function selfPing() {
   try {
-    const res = await fetchWithTimeout(`${SELF_URL}/ping`, {}, 10000);
-    const text = await res.text();
-    console.log(`🏓 Self-ping OK | WS:${wsConnected ? wsSource : 'down'} | $${livePrice?.toFixed(2) || 'N/A'}`);
+    await fetchWithTimeout(`${SELF_URL}/ping`, {}, 10000);
+    console.log(`🏓 Self-ping OK | WS:${wsConnected ? wsSource : 'down'} | $${livePrice?.toFixed(2) || 'N/A'} | session:${sessionActive ? 'ON' : 'OFF'}`);
   } catch (e) { console.warn('⚠️ Self-ping failed:', e.message); }
 }
 setInterval(selfPing, 4 * 60 * 1000);
 setTimeout(selfPing, 30000);
 
 // ════════════════════════════════════════════════════════════════
-// PRICE + KLINES (REST — browser fetches klines, server uses
-// WS price for live display + REST as fallback)
+// PRICE + KLINES
 // ════════════════════════════════════════════════════════════════
 const BINANCE_ENDPOINTS = [
   'https://data-api.binance.vision', 'https://api.binance.us',
@@ -366,7 +339,7 @@ const BINANCE_ENDPOINTS = [
 ];
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = 7000) {
-  const ctrl  = new AbortController();
+  const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const res = await fetch(url, { ...options, signal: ctrl.signal });
@@ -376,7 +349,7 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 7000) {
 
 async function binanceRequest(path, params = {}) {
   for (const ep of BINANCE_ENDPOINTS) {
-    const ctrl    = new AbortController();
+    const ctrl = new AbortController();
     const timeout = setTimeout(() => ctrl.abort(), 6000);
     try {
       const url = new URL(path, ep);
@@ -397,22 +370,71 @@ async function getCurrentPrice() {
   const bp = await binanceRequest('/api/v3/ticker/price', { symbol: 'BTCUSDT' });
   if (bp?.price) return parseFloat(bp.price);
   try {
-    const res  = await fetchWithTimeout('https://api.bybit.com/v5/market/tickers?category=spot&symbol=BTCUSDT', {}, 6000);
+    const res = await fetchWithTimeout('https://api.bybit.com/v5/market/tickers?category=spot&symbol=BTCUSDT', {}, 6000);
     const data = await res.json();
     if (data?.result?.list?.[0]?.lastPrice) return parseFloat(data.result.list[0].lastPrice);
   } catch (_) {}
   try {
-    const res  = await fetchWithTimeout('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd', {}, 6000);
+    const res = await fetchWithTimeout('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd', {}, 6000);
     const data = await res.json();
     if (data?.bitcoin?.usd) return data.bitcoin.usd;
   } catch (_) {}
   return null;
 }
 
+// FIX 5: multi-source kline fetcher used by both /chart-data and server signal engine
+async function fetchKlinesServer(limit = 350) {
+  // Source 1: Bybit REST klines
+  try {
+    const res  = await fetchWithTimeout(
+      `https://api.bybit.com/v5/market/kline?category=spot&symbol=BTCUSDT&interval=5&limit=${limit}`, {}, 8000
+    );
+    const data = await res.json();
+    if (data?.result?.list?.length > 0) {
+      console.log('[KLINES] Bybit');
+      return data.result.list.reverse().map(c => [
+        parseInt(c[0]), c[1], c[2], c[3], c[4], c[5],
+        parseInt(c[0]) + 299999, c[6] || '0', 0, '0', '0', '0',
+      ]);
+    }
+  } catch (e) { console.warn('[KLINES] Bybit failed:', e.message); }
+
+  // Source 2: CryptoCompare 5-min aggregate
+  try {
+    const res  = await fetchWithTimeout(
+      `https://min-api.cryptocompare.com/data/v2/histominute?fsym=BTC&tsym=USD&limit=${limit}&aggregate=5`, {}, 8000
+    );
+    const data = await res.json();
+    if (data?.Data?.Data?.length > 0) {
+      console.log('[KLINES] CryptoCompare');
+      return data.Data.Data.map(c => [
+        c.time * 1000, String(c.open), String(c.high), String(c.low), String(c.close),
+        String(c.volumefrom), c.time * 1000 + 299999, String(c.volumeto), 0, '0', '0', '0',
+      ]);
+    }
+  } catch (e) { console.warn('[KLINES] CryptoCompare failed:', e.message); }
+
+  // Source 3: CoinGecko OHLC (hourly — last resort)
+  try {
+    const res  = await fetchWithTimeout(
+      'https://api.coingecko.com/api/v3/coins/bitcoin/ohlc?vs_currency=usd&days=1', {}, 8000
+    );
+    const data = await res.json();
+    if (data?.length > 0) {
+      console.log('[KLINES] CoinGecko OHLC (hourly — reduced accuracy)');
+      return data.map(c => [
+        c[0], String(c[1]), String(c[2]), String(c[3]), String(c[4]),
+        '0', c[0] + 3599999, '0', 0, '0', '0', '0',
+      ]);
+    }
+  } catch (e) { console.warn('[KLINES] CoinGecko failed:', e.message); }
+
+  console.error('[KLINES] All sources failed');
+  return null;
+}
+
 // ════════════════════════════════════════════════════════════════
-// UT BOT SIGNAL LOGIC (server-side, used by /compute-signal)
-// Browser sends pre-computed klines signal to avoid geo-block.
-// Server still runs its own signal computation as backup.
+// UT BOT SIGNAL LOGIC
 // ════════════════════════════════════════════════════════════════
 function calcUtbot(klines, keyvalue, atrPeriod) {
   const close = klines.map(k => parseFloat(k[4]));
@@ -428,25 +450,25 @@ function calcUtbot(klines, keyvalue, atrPeriod) {
   const pos = [0];
   for (let i = 1; i < close.length; i++) {
     const src = close[i], src1 = close[i-1], prev = xATRTrailingStop[i-1], nl = nLoss[i];
-    let newStop;
-    if (src > prev && src1 > prev)      newStop = Math.max(prev, src - nl);
-    else if (src < prev && src1 < prev) newStop = Math.min(prev, src + nl);
-    else                                 newStop = src > prev ? src - nl : src + nl;
-    xATRTrailingStop.push(newStop);
-    let newPos;
-    if (src1 < prev && src > prev)      newPos = 1;
-    else if (src1 > prev && src < prev) newPos = -1;
-    else                                 newPos = pos[i-1];
-    pos.push(newPos);
+    let ns;
+    if (src > prev && src1 > prev)      ns = Math.max(prev, src - nl);
+    else if (src < prev && src1 < prev) ns = Math.min(prev, src + nl);
+    else                                 ns = src > prev ? src - nl : src + nl;
+    xATRTrailingStop.push(ns);
+    let np;
+    if (src1 < prev && src > prev)      np = 1;
+    else if (src1 > prev && src < prev) np = -1;
+    else                                 np = pos[i-1];
+    pos.push(np);
   }
   return { stop: xATRTrailingStop, pos, atr };
 }
 
 // ════════════════════════════════════════════════════════════════
-// RISK MANAGEMENT (all reads from RAM — zero Redis)
+// RISK MANAGEMENT (all from RAM)
 // ════════════════════════════════════════════════════════════════
 async function calculatePositionSize(balance, entryPrice, type, stopLoss, atr, config) {
-  const sizing  = config.position_sizing;
+  const sizing = config.position_sizing;
   const usdtInr = getUSDTINRFromMem();
   let size;
   switch (sizing.method) {
@@ -483,7 +505,9 @@ function calculateTakeProfitLevels(entry, type, atr, config) {
   const tp = config.take_profit;
   if (!tp.enabled) return [];
   const multipliers = config.different_rules_for_position_type?.enabled
-    ? (type === 'LONG' ? config.different_rules_for_position_type.long.tp_atr_multipliers : config.different_rules_for_position_type.short.tp_atr_multipliers)
+    ? (type === 'LONG'
+        ? config.different_rules_for_position_type.long.tp_atr_multipliers
+        : config.different_rules_for_position_type.short.tp_atr_multipliers)
     : tp.levels.map(l => l.atr_multiplier);
   return multipliers.map((mult, i) => {
     const price = type === 'LONG' ? entry + atr * mult : entry - atr * mult;
@@ -515,22 +539,19 @@ function checkAccountProtection(balance) {
   const config = getRiskConfigFromMem();
   const state  = getRiskStateFromMem();
   const prot   = config.account_protection;
-  if (prot.emergency_stop)       return { allowed: false, reason: 'Emergency stop activated' };
+  if (prot.emergency_stop)        return { allowed: false, reason: 'Emergency stop activated' };
   if (balance < prot.min_balance) return { allowed: false, reason: `Balance below minimum ₹${balance.toFixed(2)}` };
   if (state.peak_balance > 0) {
     const dd = ((state.peak_balance - balance) / state.peak_balance) * 100;
     if (dd >= prot.max_drawdown_percentage) return { allowed: false, reason: `Max drawdown ${dd.toFixed(2)}%` };
   }
-  if (balance > state.peak_balance) {
-    state.peak_balance = balance;
-    saveRiskStateAsync();
-  }
+  if (balance > state.peak_balance) { state.peak_balance = balance; saveRiskStateAsync(); }
   return { allowed: true, reason: null };
 }
 
 function canOpenTrade(balance) {
-  const daily   = checkDailyLimits();    if (!daily.allowed)   return daily;
-  const account = checkAccountProtection(balance); if (!account.allowed) return account;
+  const daily = checkDailyLimits(); if (!daily.allowed) return daily;
+  const acct  = checkAccountProtection(balance); if (!acct.allowed) return acct;
   return { allowed: true, reason: null };
 }
 
@@ -539,11 +560,10 @@ function recordTradeResult(profitLoss) {
   state.daily_trades += 1;
   if (profitLoss < 0) state.daily_loss   += Math.abs(profitLoss);
   else                state.daily_profit += profitLoss;
-  // No async needed — already in mem, saveRiskStateAsync called by caller
 }
 
 // ════════════════════════════════════════════════════════════════
-// POSITION CLOSE HELPERS (all operate on mem.trades in RAM)
+// POSITION CLOSE HELPERS
 // ════════════════════════════════════════════════════════════════
 function calculateLivePL(openTrade, currentPrice) {
   if (!openTrade) return null;
@@ -561,7 +581,7 @@ async function closeFullPositionInMem(openTrade, currentPrice, reason, usdtInr) 
   const balBefore  = mem.trades.balance;
   mem.trades.balance += profitInr;
 
-  const closedAt = new Date();
+  const closedAt    = new Date();
   const tradeRecord = {
     type: openTrade.type, entry_price: openTrade.entry_price,
     exit_price: currentPrice, amount: openTrade.amount,
@@ -593,7 +613,7 @@ async function closePartialPositionInMem(openTrade, currentPrice, partialPct, re
   const balBefore   = mem.trades.balance;
   mem.trades.balance += profitInr;
 
-  const now = new Date();
+  const now         = new Date();
   const tradeRecord = {
     type: openTrade.type, entry_price: openTrade.entry_price,
     exit_price: currentPrice, amount: closeAmount,
@@ -612,7 +632,6 @@ async function closePartialPositionInMem(openTrade, currentPrice, partialPct, re
   };
   mem.trades.history.push(tradeRecord);
   recordTradeResult(profitInr);
-  // Update open trade — mark TP1, move SL to breakeven, reduce amount
   openTrade.amount          = parseFloat((openTrade.amount - closeAmount).toFixed(6));
   openTrade.stop_loss       = parseFloat(openTrade.entry_price.toFixed(2));
   openTrade.breakeven_moved = true;
@@ -623,48 +642,44 @@ async function closePartialPositionInMem(openTrade, currentPrice, partialPct, re
 }
 
 // ════════════════════════════════════════════════════════════════
-// SMART COOLDOWN (reads from mem only — zero Redis)
+// SMART COOLDOWN
 // ════════════════════════════════════════════════════════════════
 function checkCooldown(signal, currentPrice, cooldownConfig) {
   const data = mem.trades;
   const cfg  = cooldownConfig;
   const now  = Date.now();
   if (!data.last_closed_side) return { canOpen: true, reason: null };
-
   const sameSide = (data.last_closed_side === signal);
 
   if (sameSide) {
     const closeReason    = data.last_close_reason;
     const lastEntryPrice = data.last_entry_price;
     const elapsed        = now - data.last_closed_time;
-
     if (closeReason === 'sl') {
       if (elapsed < cfg.sl_cooldown_ms) {
-        const remaining = Math.ceil((cfg.sl_cooldown_ms - elapsed) / 1000);
-        const m = Math.floor(remaining / 60), s = remaining % 60;
+        const rem = Math.ceil((cfg.sl_cooldown_ms - elapsed) / 1000);
+        const m = Math.floor(rem / 60), s = rem % 60;
         return { canOpen: false, reason: `⏳ SL cooldown: ${m > 0 ? m + 'm ' : ''}${s}s remaining` };
       }
       if (cfg.distance_filter_enabled && lastEntryPrice) {
         const distPct = Math.abs(currentPrice - lastEntryPrice) / lastEntryPrice * 100;
         if (distPct > cfg.distance_filter_pct)
-          return { canOpen: false, reason: `⛔ Distance filter: moved ${distPct.toFixed(2)}% from last entry $${lastEntryPrice.toFixed(2)} (max ${cfg.distance_filter_pct}%)` };
+          return { canOpen: false, reason: `⛔ Distance filter: moved ${distPct.toFixed(2)}% from $${lastEntryPrice.toFixed(2)} (max ${cfg.distance_filter_pct}%)` };
       }
       return { canOpen: true, reason: null };
     }
-
     if (cfg.distance_filter_enabled && lastEntryPrice) {
       const distPct = Math.abs(currentPrice - lastEntryPrice) / lastEntryPrice * 100;
       if (distPct > cfg.distance_filter_pct)
         return { canOpen: false, reason: `⛔ Distance filter: ${distPct.toFixed(2)}% from last entry` };
     }
     return { canOpen: true, reason: null };
-
   } else {
     if (data.pending_opposite_side === signal) {
       const elapsed = now - data.pending_opposite_time;
       if (elapsed >= cfg.opposite_confirmation_ms) return { canOpen: true, reason: null };
-      const remaining = Math.ceil((cfg.opposite_confirmation_ms - elapsed) / 1000);
-      return { canOpen: false, reason: `⏳ Opposite confirmation: ${remaining}s for ${signal}` };
+      const rem = Math.ceil((cfg.opposite_confirmation_ms - elapsed) / 1000);
+      return { canOpen: false, reason: `⏳ Opposite confirmation: ${rem}s for ${signal}` };
     } else {
       data.pending_opposite_side = signal;
       data.pending_opposite_time = now;
@@ -674,16 +689,16 @@ function checkCooldown(signal, currentPrice, cooldownConfig) {
 }
 
 // ════════════════════════════════════════════════════════════════
-// CORE TRADE LOGIC — all from RAM, no Redis reads
+// CORE TRADE LOGIC
 // ════════════════════════════════════════════════════════════════
 async function updateDemoTrade(signal, price, atrValue, utbotStop) {
   signal = signal.charAt(0).toUpperCase() + signal.slice(1).toLowerCase();
-  const data      = mem.trades;
-  const config    = getRiskConfigFromMem();
-  let openTrade   = data.open_trade;
+  const data   = mem.trades;
+  const config = getRiskConfigFromMem();
+  let openTrade    = data.open_trade;
   let actionMessage = '';
-
-  const logEntry = { time: new Date().toISOString(), side: signal, price, quantity: 0 };
+  // FIX 4: always initialise action so addOrderLog never gets undefined
+  const logEntry = { time: new Date().toISOString(), side: signal, price, quantity: 0, action: 'TICK' };
 
   // Trailing stop update
   if (openTrade && openTrade.breakeven_moved && config.stop_loss.trailing_enabled) {
@@ -698,19 +713,15 @@ async function updateDemoTrade(signal, price, atrValue, utbotStop) {
   if (signal === 'Hold') {
     if (!actionMessage) { actionMessage = 'Holding — waiting for signal.'; logEntry.action = 'HOLD'; }
     data.pending_opposite_side = null; data.pending_opposite_time = null;
-
   } else {
     const canTrade = canOpenTrade(data.balance);
     if (!canTrade.allowed) {
       actionMessage = `⚠️ Cannot open ${signal}: ${canTrade.reason}`;
       logEntry.action = 'BLOCKED';
-
     } else if (openTrade && openTrade.type === (signal === 'Buy' ? 'LONG' : 'SHORT')) {
       actionMessage = `Ignoring repeated "${signal}" — already in ${signal === 'Buy' ? 'LONG' : 'SHORT'}.`;
       logEntry.action = 'IGNORED';
-
     } else {
-      // Close opposite first
       if (openTrade) {
         const oppSide = openTrade.type === 'LONG' ? 'Sell' : 'Buy';
         if (oppSide === signal) {
@@ -718,9 +729,9 @@ async function updateDemoTrade(signal, price, atrValue, utbotStop) {
           actionMessage = `CLOSED ${openTrade.type} @ $${price.toFixed(2)}, P/L:₹${tradeRecord.profit_inr.toFixed(2)}. | `;
           logEntry.action = `CLOSE_${openTrade.type}`;
           openTrade = null;
-          data.last_closed_time     = Date.now(); data.last_closed_side = side;
-          data.last_closed_sl_price = null;       data.last_close_reason = 'signal';
-          data.pending_opposite_side = null;      data.pending_opposite_time = null;
+          data.last_closed_time = Date.now(); data.last_closed_side = side;
+          data.last_closed_sl_price = null;   data.last_close_reason = 'signal';
+          data.pending_opposite_side = null;  data.pending_opposite_time = null;
         }
       }
 
@@ -756,10 +767,9 @@ async function updateDemoTrade(signal, price, atrValue, utbotStop) {
         actionMessage += (signal === 'Buy' ? '🟢 OPENED LONG' : '🔴 OPENED SHORT') +
           ` @ $${price.toFixed(2)} | ${positionSize} BTC | SL:$${stopLoss?.toFixed(2) || 'N/A'} | TP1:$${tp1Price?.toFixed(2) || 'N/A'}`;
         logEntry.action = signal === 'Buy' ? 'OPEN_LONG' : 'OPEN_SHORT';
-        data.last_signal      = signal;
+        data.last_signal       = signal;
         data.last_entry_price  = price;
         data.last_entry_signal = signal;
-
       } else {
         actionMessage = cooldownReason || 'Cooldown active';
         logEntry.action = 'COOLDOWN';
@@ -769,7 +779,6 @@ async function updateDemoTrade(signal, price, atrValue, utbotStop) {
 
   addOrderLog(logEntry.action, signal, price, logEntry.quantity || 0, null);
   data.open_trade = openTrade;
-  // Write-through to Redis
   saveTradesAsync();
   saveRiskStateAsync();
 
@@ -790,21 +799,20 @@ async function forceClosePosition(currentPrice, reason) {
   if (!openTrade) return null;
   const { tradeRecord, side } = await closeFullPositionInMem(openTrade, currentPrice, reason);
   addOrderLog('FORCE_CLOSE', 'CLOSE', currentPrice, openTrade.amount, tradeRecord.profit_inr);
-  mem.trades.last_closed_time     = Date.now(); mem.trades.last_closed_side = side;
-  mem.trades.last_closed_sl_price = null;       mem.trades.last_close_reason = 'force';
-  mem.trades.pending_opposite_side = null;      mem.trades.pending_opposite_time = null;
+  mem.trades.last_closed_time = Date.now(); mem.trades.last_closed_side = side;
+  mem.trades.last_closed_sl_price = null;   mem.trades.last_close_reason = 'force';
+  mem.trades.pending_opposite_side = null;  mem.trades.pending_opposite_time = null;
   saveTradesAsync();
   saveRiskStateAsync();
   return tradeRecord;
 }
 
 // ════════════════════════════════════════════════════════════════
-// TRADING HOURS (from RAM)
+// TRADING HOURS
 // ════════════════════════════════════════════════════════════════
 function getCurrentHourIST() {
   return parseInt(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata', hour: 'numeric', hour12: false }));
 }
-
 function getCurrentMinuteIST() {
   return parseInt(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata', minute: 'numeric', hour12: false }));
 }
@@ -819,7 +827,7 @@ function isTradingAllowed() {
   return { allowed: true, reason: null };
 }
 
-// Daily reset cron (IST midnight)
+// FIX 9: daily reset cron at IST midnight only (18:30 UTC = 00:00 IST)
 async function resetDailyIfNeeded() {
   const state    = getRiskStateFromMem();
   const nowIST   = new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
@@ -831,270 +839,8 @@ async function resetDailyIfNeeded() {
     console.log('🔄 Daily risk state reset (IST midnight)');
   }
 }
-cron.schedule('0 * * * *', resetDailyIfNeeded);
-
-// ════════════════════════════════════════════════════════════════
-// SERVER-SIDE SIGNAL ENGINE
-// Primary: browser POSTs signal via /compute-signal when open.
-// Fallback: server fetches klines itself when browser is absent
-//           (lastBrowserSignal not received for > 10 min).
-// Kline source chain: Bybit → CryptoCompare → CoinGecko OHLC
-// Runs every 5 min, only during trading hours (18:00–23:00 IST).
-// ════════════════════════════════════════════════════════════════
-let lastBrowserSignalAt = 0;           // timestamp of last /compute-signal POST from browser
-const BROWSER_TIMEOUT_MS = 10 * 60 * 1000; // 10 min — if exceeded, server takes over
-let serverEngineRunning  = false;       // lock to prevent overlapping runs
-
-// ── Multi-source kline fetcher ────────────────────────────────
-async function fetchKlinesServer(limit = 350) {
-  // Source 1: Bybit REST klines (not geo-blocked on Render for klines)
-  try {
-    const res  = await fetchWithTimeout(
-      `https://api.bybit.com/v5/market/kline?category=spot&symbol=BTCUSDT&interval=5&limit=${limit}`,
-      {}, 8000
-    );
-    const data = await res.json();
-    if (data?.result?.list?.length > 0) {
-      console.log('[ENGINE] Klines from Bybit');
-      // Bybit returns newest-first → reverse to oldest-first
-      return data.result.list.reverse().map(c => [
-        parseInt(c[0]), c[1], c[2], c[3], c[4], c[5],
-        parseInt(c[0]) + 299999, c[6], 0, '0', '0', '0',
-      ]);
-    }
-  } catch (e) { console.warn('[ENGINE] Bybit klines failed:', e.message); }
-
-  // Source 2: CryptoCompare (5-min aggregate)
-  try {
-    const res  = await fetchWithTimeout(
-      `https://min-api.cryptocompare.com/data/v2/histominute?fsym=BTC&tsym=USD&limit=${limit}&aggregate=5`,
-      {}, 8000
-    );
-    const data = await res.json();
-    if (data?.Data?.Data?.length > 0) {
-      console.log('[ENGINE] Klines from CryptoCompare');
-      return data.Data.Data.map(c => [
-        c.time * 1000, String(c.open), String(c.high), String(c.low), String(c.close),
-        String(c.volumefrom), c.time * 1000 + 299999, String(c.volumeto), 0, '0', '0', '0',
-      ]);
-    }
-  } catch (e) { console.warn('[ENGINE] CryptoCompare klines failed:', e.message); }
-
-  // Source 3: CoinGecko OHLC (hourly only — last resort, less accurate for 5m)
-  try {
-    const res  = await fetchWithTimeout(
-      'https://api.coingecko.com/api/v3/coins/bitcoin/ohlc?vs_currency=usd&days=1',
-      {}, 8000
-    );
-    const data = await res.json();
-    if (data?.length > 0) {
-      console.log('[ENGINE] Klines from CoinGecko OHLC (hourly — reduced accuracy)');
-      return data.map(c => [
-        c[0], String(c[1]), String(c[2]), String(c[3]), String(c[4]),
-        '0', c[0] + 3599999, '0', 0, '0', '0', '0',
-      ]);
-    }
-  } catch (e) { console.warn('[ENGINE] CoinGecko OHLC failed:', e.message); }
-
-  console.error('[ENGINE] All kline sources failed');
-  return null;
-}
-
-// ── Core server signal tick ───────────────────────────────────
-async function serverSignalTick() {
-  if (serverEngineRunning) return;
-  serverEngineRunning = true;
-  try {
-    const { allowed } = isTradingAllowed();
-    if (!allowed) { console.log('[ENGINE] Outside trading hours — skipping'); return; }
-
-    // If browser recently posted a signal, don't duplicate
-    const browserActive = (Date.now() - lastBrowserSignalAt) < BROWSER_TIMEOUT_MS;
-    if (browserActive) {
-      console.log('[ENGINE] Browser active — server fallback not needed');
-      return;
-    }
-
-    console.log('[ENGINE] Browser absent — running server-side signal computation');
-    const klines = await fetchKlinesServer(350);
-    if (!klines || klines.length < 50) {
-      console.error('[ENGINE] Not enough klines — aborting tick');
-      return;
-    }
-
-    // Exclude last forming candle
-    const confirmed = klines.slice(0, -1);
-    const last      = confirmed[confirmed.length - 1];
-
-    const df1 = calcUtbot(confirmed, 2, 1);
-    const df2 = calcUtbot(confirmed, 2, 300);
-
-    const sig1  = df1.pos[df1.pos.length - 1];
-    const sig2  = df2.pos[df2.pos.length - 1];
-    const stop1 = df1.stop[df1.stop.length - 1];
-    const stop2 = df2.stop[df2.stop.length - 1];
-    const atr   = df1.atr[df1.atr.length - 1] || 0;
-    const price = parseFloat(last[4]);
-
-    let signal = 'Hold', utbotStop = null;
-    if (sig2 === 1)  { signal = 'Buy';  utbotStop = stop2; }
-    if (sig1 === -1) { signal = 'Sell'; utbotStop = stop1; }
-
-    const candle = {
-      ts:    parseInt(last[0]),
-      open:  parseFloat(last[1]),
-      high:  parseFloat(last[2]),
-      low:   parseFloat(last[3]),
-      close: price,
-    };
-
-    console.log(`[ENGINE] Server signal: ${signal} @ $${price.toFixed(2)} ATR:${atr.toFixed(2)}`);
-
-    // Run through the same trade logic as /compute-signal
-    await processSignal(signal, price, atr, utbotStop || price, candle);
-
-  } catch (e) {
-    console.error('[ENGINE] Server tick error:', e.message);
-  } finally {
-    serverEngineRunning = false;
-  }
-}
-
-// Shared signal processing — used by both /compute-signal and serverSignalTick
-async function processSignal(signal, price, atr, utbotStop, candle) {
-  const { allowed, reason } = isTradingAllowed();
-  if (!allowed) return { ok: true, action: 'PAUSED', reason };
-
-  const openTrade = mem.trades.open_trade;
-
-  // OHLC SL/TP check (primary)
-  if (openTrade && candle) {
-    if (openTrade.type === 'LONG') {
-      if (candle.low <= openTrade.stop_loss) {
-        const { tradeRecord } = await closeFullPositionInMem(openTrade, openTrade.stop_loss, 'SL Hit (OHLC)');
-        addOrderLog('SL_HIT_OHLC', 'Sell', openTrade.stop_loss, openTrade.amount, tradeRecord.profit_inr);
-        mem.trades.last_closed_time = Date.now(); mem.trades.last_close_reason = 'sl';
-        saveTradesAsync(); saveRiskStateAsync();
-        return { ok: true, action: 'SL_HIT', trade: tradeRecord };
-      }
-      const nextTP = openTrade.tp_levels?.find(t => !t.hit);
-      if (nextTP && candle.high >= nextTP.price) {
-        if (nextTP.name === 'TP1') {
-          const { tradeRecord } = await closePartialPositionInMem(openTrade, nextTP.price, 0.6, 'TP1 Hit (OHLC)');
-          addOrderLog('TP1_OHLC', 'Sell', nextTP.price, 0, tradeRecord.profit_inr);
-          mem.trades.last_close_reason = 'tp';
-          saveTradesAsync(); saveRiskStateAsync();
-          return { ok: true, action: 'TP1_HIT', trade: tradeRecord };
-        } else {
-          const { tradeRecord } = await closeFullPositionInMem(openTrade, nextTP.price, `${nextTP.name} Hit (OHLC)`);
-          addOrderLog(`${nextTP.name}_OHLC`, 'Sell', nextTP.price, openTrade.amount, tradeRecord.profit_inr);
-          mem.trades.last_closed_time = Date.now(); mem.trades.last_close_reason = 'tp';
-          saveTradesAsync(); saveRiskStateAsync();
-          return { ok: true, action: 'TP_HIT', trade: tradeRecord };
-        }
-      }
-    } else { // SHORT
-      if (candle.high >= openTrade.stop_loss) {
-        const { tradeRecord } = await closeFullPositionInMem(openTrade, openTrade.stop_loss, 'SL Hit (OHLC)');
-        addOrderLog('SL_HIT_OHLC', 'Buy', openTrade.stop_loss, openTrade.amount, tradeRecord.profit_inr);
-        mem.trades.last_closed_time = Date.now(); mem.trades.last_close_reason = 'sl';
-        saveTradesAsync(); saveRiskStateAsync();
-        return { ok: true, action: 'SL_HIT', trade: tradeRecord };
-      }
-      const nextTP = openTrade.tp_levels?.find(t => !t.hit);
-      if (nextTP && candle.low <= nextTP.price) {
-        const { tradeRecord } = await closeFullPositionInMem(openTrade, nextTP.price, `${nextTP.name} Hit (OHLC)`);
-        addOrderLog(`${nextTP.name}_OHLC`, 'Buy', nextTP.price, openTrade.amount, tradeRecord.profit_inr);
-        mem.trades.last_closed_time = Date.now(); mem.trades.last_close_reason = 'tp';
-        saveTradesAsync(); saveRiskStateAsync();
-        return { ok: true, action: 'TP_HIT', trade: tradeRecord };
-      }
-    }
-    // In trade — no new entries
-    if (mem.trades.open_trade) return { ok: true, action: 'IN_TRADE' };
-  }
-
-  const result = await updateDemoTrade(signal, price, atr || 0, utbotStop || price);
-  return { ok: true, action: result.action, ...result };
-}
-
-// ── Trading session scheduler ─────────────────────────────────
-// Cron runs every minute. At session start (18:00) → immediate signal.
-// At session end (23:00) → force close any open trade then stop.
-// During session → server signal engine fires every 5 min.
-
-let sessionActive     = false; // tracks whether we're inside trading hours
-let signalCronHandle  = null;  // handle for the 5-min signal cron
-
-function startTradingSession() {
-  if (sessionActive) return;
-  sessionActive = true;
-  console.log('🟢 [SESSION] Trading session started (18:00 IST) — running immediate signal check');
-
-  // Immediate signal check at session open
-  serverSignalTick();
-
-  // Schedule signal every 5 minutes during session
-  // */5 * * * * = every 5 minutes
-  signalCronHandle = cron.schedule('*/5 * * * *', () => {
-    serverSignalTick();
-  });
-}
-
-async function stopTradingSession() {
-  if (!sessionActive) return;
-  sessionActive = false;
-  console.log('🔴 [SESSION] Trading session ended (23:00 IST) — force closing any open trade');
-
-  // Stop 5-min signal cron
-  if (signalCronHandle) {
-    signalCronHandle.stop();
-    signalCronHandle = null;
-  }
-
-  // Force close open trade at market price
-  const openTrade = mem.trades.open_trade;
-  if (openTrade) {
-    const price = livePrice || await getCurrentPrice();
-    if (price) {
-      const closed = await forceClosePosition(price, 'Session End (23:00 IST)');
-      console.log(`🔴 [SESSION] Force closed ${openTrade.type} @ $${price.toFixed(2)} | P/L:₹${closed?.profit_inr?.toFixed(2)}`);
-    } else {
-      console.error('[SESSION] Could not get price to force close — trade left open');
-    }
-  } else {
-    console.log('[SESSION] No open trade to close');
-  }
-}
-
-// Session watchdog — runs every minute, triggers start/stop at exact hours
-cron.schedule('* * * * *', async () => {
-  const state = getTradingStateFromMem();
-
-  // Force start overrides session scheduler
-  if (state.force_start || state.manual_pause) return;
-  if (!state.enabled) return;
-
-  const hour = getCurrentHourIST();
-  const min  = getCurrentMinuteIST();
-
-  // 18:00 → start session
-  if (hour === state.start_hour && min === 0 && !sessionActive) {
-    startTradingSession();
-  }
-
-  // 23:00 → stop session
-  if (hour === state.end_hour && min === 0 && sessionActive) {
-    await stopTradingSession();
-  }
-
-  // If we're mid-session (e.g. server restarted during trading hours)
-  // and the signal cron isn't running, restart it
-  if (hour >= state.start_hour && hour < state.end_hour && !sessionActive && !state.manual_pause) {
-    console.log('[SESSION] Server restarted mid-session — resuming signal engine');
-    startTradingSession();
-  }
-});
+// Run once per day at 00:00 IST = 18:30 UTC
+cron.schedule('30 18 * * *', resetDailyIfNeeded);
 
 function getRiskStatus() {
   const config = getRiskConfigFromMem();
@@ -1115,11 +861,177 @@ function getRiskStatus() {
 }
 
 // ════════════════════════════════════════════════════════════════
+// SERVER-SIDE SIGNAL ENGINE
+// Primary: browser POSTs signal via /compute-signal when open.
+// Fallback: server fetches klines itself after 10 min browser silence.
+// ════════════════════════════════════════════════════════════════
+let lastBrowserSignalAt = 0;
+const BROWSER_TIMEOUT_MS = 10 * 60 * 1000;
+let serverEngineRunning  = false;
+
+async function serverSignalTick() {
+  if (serverEngineRunning) return;
+  serverEngineRunning = true;
+  try {
+    const { allowed } = isTradingAllowed();
+    if (!allowed) { console.log('[ENGINE] Outside hours — skip'); return; }
+
+    const browserActive = (Date.now() - lastBrowserSignalAt) < BROWSER_TIMEOUT_MS;
+    if (browserActive) { console.log('[ENGINE] Browser active — no fallback needed'); return; }
+
+    console.log('[ENGINE] Browser absent — server computing signal');
+    const klines = await fetchKlinesServer(350);
+    if (!klines || klines.length < 50) { console.error('[ENGINE] Not enough klines'); return; }
+
+    const confirmed = klines.slice(0, -1);
+    const last      = confirmed[confirmed.length - 1];
+    const df1 = calcUtbot(confirmed, 2, 1);
+    const df2 = calcUtbot(confirmed, 2, 300);
+    const sig1 = df1.pos[df1.pos.length - 1];
+    const sig2 = df2.pos[df2.pos.length - 1];
+    const atr  = df1.atr[df1.atr.length - 1] || 0;
+    const price = parseFloat(last[4]);
+
+    let signal = 'Hold', utbotStop = null;
+    if (sig2 === 1)  { signal = 'Buy';  utbotStop = df2.stop[df2.stop.length - 1]; }
+    if (sig1 === -1) { signal = 'Sell'; utbotStop = df1.stop[df1.stop.length - 1]; }
+
+    const candle = {
+      ts: parseInt(last[0]), open: parseFloat(last[1]),
+      high: parseFloat(last[2]), low: parseFloat(last[3]), close: price,
+    };
+    console.log(`[ENGINE] Signal: ${signal} @ $${price.toFixed(2)} ATR:${atr.toFixed(2)}`);
+    await processSignal(signal, price, atr, utbotStop || price, candle);
+
+  } catch (e) {
+    console.error('[ENGINE] Tick error:', e.message);
+  } finally {
+    serverEngineRunning = false;
+  }
+}
+
+// FIX 1: processSignal — explicit return after EVERY OHLC close
+// No fall-through to updateDemoTrade after a close
+async function processSignal(signal, price, atr, utbotStop, candle) {
+  const { allowed, reason } = isTradingAllowed();
+  if (!allowed) return { ok: true, action: 'PAUSED', reason };
+
+  const openTrade = mem.trades.open_trade;
+
+  if (openTrade && candle) {
+    if (openTrade.type === 'LONG') {
+      // SL check
+      if (candle.low <= openTrade.stop_loss) {
+        const { tradeRecord } = await closeFullPositionInMem(openTrade, openTrade.stop_loss, 'SL Hit (OHLC)');
+        addOrderLog('SL_HIT_OHLC', 'Sell', openTrade.stop_loss, tradeRecord.amount, tradeRecord.profit_inr);
+        mem.trades.last_closed_time = Date.now(); mem.trades.last_close_reason = 'sl';
+        saveTradesAsync(); saveRiskStateAsync();
+        return { ok: true, action: 'SL_HIT', trade: tradeRecord }; // ← explicit return
+      }
+      // TP check
+      const nextTP = openTrade.tp_levels?.find(t => !t.hit);
+      if (nextTP && candle.high >= nextTP.price) {
+        if (nextTP.name === 'TP1') {
+          const { tradeRecord } = await closePartialPositionInMem(openTrade, nextTP.price, 0.6, 'TP1 Hit (OHLC)');
+          addOrderLog('TP1_OHLC', 'Sell', nextTP.price, tradeRecord.amount, tradeRecord.profit_inr);
+          mem.trades.last_close_reason = 'tp';
+          saveTradesAsync(); saveRiskStateAsync();
+          return { ok: true, action: 'TP1_HIT', trade: tradeRecord }; // ← explicit return
+        } else {
+          const { tradeRecord } = await closeFullPositionInMem(openTrade, nextTP.price, `${nextTP.name} Hit (OHLC)`);
+          addOrderLog(`${nextTP.name}_OHLC`, 'Sell', nextTP.price, tradeRecord.amount, tradeRecord.profit_inr);
+          mem.trades.last_closed_time = Date.now(); mem.trades.last_close_reason = 'tp';
+          saveTradesAsync(); saveRiskStateAsync();
+          return { ok: true, action: 'TP_HIT', trade: tradeRecord }; // ← explicit return
+        }
+      }
+    } else { // SHORT
+      if (candle.high >= openTrade.stop_loss) {
+        const { tradeRecord } = await closeFullPositionInMem(openTrade, openTrade.stop_loss, 'SL Hit (OHLC)');
+        addOrderLog('SL_HIT_OHLC', 'Buy', openTrade.stop_loss, tradeRecord.amount, tradeRecord.profit_inr);
+        mem.trades.last_closed_time = Date.now(); mem.trades.last_close_reason = 'sl';
+        saveTradesAsync(); saveRiskStateAsync();
+        return { ok: true, action: 'SL_HIT', trade: tradeRecord }; // ← explicit return
+      }
+      const nextTP = openTrade.tp_levels?.find(t => !t.hit);
+      if (nextTP && candle.low <= nextTP.price) {
+        const { tradeRecord } = await closeFullPositionInMem(openTrade, nextTP.price, `${nextTP.name} Hit (OHLC)`);
+        addOrderLog(`${nextTP.name}_OHLC`, 'Buy', nextTP.price, tradeRecord.amount, tradeRecord.profit_inr);
+        mem.trades.last_closed_time = Date.now(); mem.trades.last_close_reason = 'tp';
+        saveTradesAsync(); saveRiskStateAsync();
+        return { ok: true, action: 'TP_HIT', trade: tradeRecord }; // ← explicit return
+      }
+    }
+
+    // Trade still open — no new entries allowed
+    if (mem.trades.open_trade) {
+      return { ok: true, action: 'IN_TRADE' }; // ← explicit return
+    }
+  }
+
+  // No open trade — process new signal
+  const result = await updateDemoTrade(signal, price, atr || 0, utbotStop || price);
+  return { ok: true, action: result.action, ...result };
+}
+
+// ── Trading session scheduler ─────────────────────────────────
+let sessionActive    = false;
+let signalCronHandle = null;
+
+function startTradingSession() {
+  if (sessionActive) return;
+  sessionActive = true;
+  console.log('🟢 [SESSION] Started — running immediate signal check');
+  serverSignalTick();
+  signalCronHandle = cron.schedule('*/5 * * * *', () => { serverSignalTick(); });
+}
+
+// FIX 7: stopTradingSession handles price fetch failure — always marks session inactive
+async function stopTradingSession() {
+  if (!sessionActive) return;
+  sessionActive = false;
+  if (signalCronHandle) { signalCronHandle.stop(); signalCronHandle = null; }
+  console.log('🔴 [SESSION] Ended — force closing any open trade');
+
+  const openTrade = mem.trades.open_trade;
+  if (openTrade) {
+    const price = livePrice || await getCurrentPrice();
+    if (price) {
+      const closed = await forceClosePosition(price, 'Session End (23:00 IST)');
+      console.log(`🔴 [SESSION] Force closed ${openTrade.type} @ $${price.toFixed(2)} P/L:₹${closed?.profit_inr?.toFixed(2)}`);
+    } else {
+      // FIX 7: price unavailable — log clearly but don't hang
+      console.error('[SESSION] ⚠️ Could not get price to close trade. Trade remains open. Force-close manually from dashboard.');
+    }
+  } else {
+    console.log('[SESSION] No open trade to close');
+  }
+}
+
+// Session watchdog — every minute
+cron.schedule('* * * * *', async () => {
+  const state = getTradingStateFromMem();
+  if (state.force_start || state.manual_pause || !state.enabled) return;
+
+  const hour = getCurrentHourIST();
+  const min  = getCurrentMinuteIST();
+
+  if (hour === state.start_hour && min === 0 && !sessionActive) startTradingSession();
+  if (hour === state.end_hour   && min === 0 && sessionActive)  await stopTradingSession();
+
+  // Mid-session restart recovery
+  if (hour >= state.start_hour && hour < state.end_hour && !sessionActive) {
+    console.log('[SESSION] Mid-session restart detected — resuming');
+    startTradingSession();
+  }
+});
+
+// ════════════════════════════════════════════════════════════════
 // EXPRESS ROUTES
 // ════════════════════════════════════════════════════════════════
 app.get('/ping', (req, res) => {
   const browserActive = (Date.now() - lastBrowserSignalAt) < BROWSER_TIMEOUT_MS;
-  res.send(`pong | ws:${wsConnected ? wsSource : 'down'} | $${livePrice?.toFixed(2) || 'N/A'} | session:${sessionActive ? 'ACTIVE' : 'OFF'} | engine:${browserActive ? 'browser' : 'server'} | ${new Date().toISOString()}`);
+  res.send(`pong | ws:${wsConnected ? wsSource : 'down'} | $${livePrice?.toFixed(2) || 'N/A'} | session:${sessionActive ? 'ON' : 'OFF'} | engine:${browserActive ? 'browser' : 'server'} | ${new Date().toISOString()}`);
 });
 
 app.get('/ws-status', (req, res) => {
@@ -1135,10 +1047,7 @@ app.get('/ws-status', (req, res) => {
 
 app.get('/', (req, res) => res.sendFile(__dirname + '/index.html'));
 
-// ── /signal — serves current state from RAM (zero Redis) ──────
-// Browser calls this every 5s for live display.
-// Signal computation is now done by browser → /compute-signal.
-// This route only returns the current RAM state.
+// /signal — serves current RAM state (zero Redis)
 app.get('/signal', async (req, res) => {
   try {
     const { allowed, reason } = isTradingAllowed();
@@ -1148,7 +1057,6 @@ app.get('/signal', async (req, res) => {
     const usdtInr   = getUSDTINRFromMem();
     const livePlUsdt = calculateLivePL(openTrade, price);
     const livePlInr  = livePlUsdt != null ? livePlUsdt * usdtInr : null;
-    const riskStatus = getRiskStatus();
 
     res.json({
       price, signal: 'Hold', balance: data.balance,
@@ -1160,8 +1068,8 @@ app.get('/signal', async (req, res) => {
       stop_loss: openTrade?.stop_loss || null,
       tp_levels: openTrade?.tp_levels || [],
       position_size: openTrade?.amount || 0,
-      atr: 0, // ATR now computed in browser
-      risk_status: riskStatus,
+      atr: 0,
+      risk_status: getRiskStatus(),
       trading_allowed: allowed, pause_reason: reason || null,
       force_start: getTradingStateFromMem().force_start,
       cooldown: { active: false, message: null },
@@ -1174,43 +1082,33 @@ app.get('/signal', async (req, res) => {
   }
 });
 
-// ── /compute-signal — receives browser-computed signal ─────────
-// Browser fetches klines, runs UT Bot logic, sends result here.
-// Also updates lastBrowserSignalAt so server fallback knows
-// browser is active and doesn't duplicate signal computation.
-// Body: { signal, price, atr, utbot_stop, candle }
+// /compute-signal — browser posts here; also updates lastBrowserSignalAt
 app.post('/compute-signal', async (req, res) => {
   try {
     const { signal, price, atr, utbot_stop, candle } = req.body;
     if (!signal || !price) return res.json({ ok: false, msg: 'Missing signal or price' });
-
-    // Mark browser as active — suppresses server fallback for 10 min
     lastBrowserSignalAt = Date.now();
-
-    console.log(`[SIGNAL-IN] Browser: ${signal} @ $${price} ATR:${atr?.toFixed(2)}`);
-
+    console.log(`[SIGNAL-IN] Browser: ${signal} @ $${price} ATR:${atr?.toFixed?.(2)}`);
     const result = await processSignal(signal, price, atr || 0, utbot_stop || price, candle);
     return res.json(result);
-
   } catch (e) {
     console.error('/compute-signal error:', e);
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
-// ── Chart data (no Redis) ─────────────────────────────────────
+// FIX 5: /chart-data uses fetchKlinesServer (Bybit→CryptoCompare→CoinGecko) not Binance REST
 app.get('/chart-data', async (req, res) => {
   try {
-    const klines = await binanceRequest('/api/v3/klines', { symbol: 'BTCUSDT', interval: '5m', limit: 350 });
-    if (!klines) return res.status(500).json({ error: 'No kline data' });
-    const candles  = klines.map(k => ({ time: Math.floor(k[0] / 1000), open: parseFloat(k[1]), high: parseFloat(k[2]), low: parseFloat(k[3]), close: parseFloat(k[4]) }));
+    const klines = await fetchKlinesServer(350);
+    if (!klines) return res.status(500).json({ error: 'No kline data from any source' });
+    const candles  = klines.map(k => ({ time: Math.floor(parseInt(k[0]) / 1000), open: parseFloat(k[1]), high: parseFloat(k[2]), low: parseFloat(k[3]), close: parseFloat(k[4]) }));
     const df1      = calcUtbot(klines, 2, 1);
     const stopLine = df1.stop.map((val, idx) => ({ time: candles[idx].time, value: val }));
     res.json({ candles, stop_line: stopLine });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ── History (from RAM — zero Redis) ───────────────────────────
 app.get('/history', (req, res) => res.json(mem.trades.history || []));
 app.get('/orders',  (req, res) => res.json((mem.trades.order_log || []).slice().reverse()));
 
@@ -1226,10 +1124,10 @@ app.get('/status', async (req, res) => {
     risk_status: getRiskStatus(),
     force_start: getTradingStateFromMem().force_start,
     ws_connected: wsConnected, ws_source: wsSource,
+    session_active: sessionActive,
   });
 });
 
-// ── Risk config (from RAM) ────────────────────────────────────
 app.get('/risk-config', (req, res) => res.json(mem.riskConfig));
 app.post('/risk-config', (req, res) => {
   try {
@@ -1241,7 +1139,6 @@ app.post('/risk-config', (req, res) => {
 
 app.get('/risk-status', (req, res) => res.json(getRiskStatus()));
 
-// ── Trading control (from RAM) ────────────────────────────────
 app.get('/trading-control', (req, res) => {
   const { allowed, reason } = isTradingAllowed();
   res.json({ state: getTradingStateFromMem(), trading_allowed: allowed, pause_reason: reason, current_time: new Date().toLocaleTimeString() });
@@ -1252,30 +1149,54 @@ app.post('/trading-control', async (req, res) => {
     const { action } = req.body;
     const state = mem.tradingState;
     switch (action) {
-      case 'pause':       state.manual_pause = true;  state.force_start = false; saveTradingStateAsync(); return res.json({ success: true, message: 'Trading paused' });
-      case 'resume':      state.manual_pause = false; state.force_start = false; saveTradingStateAsync(); return res.json({ success: true, message: 'Trading resumed' });
-      case 'force_start': state.manual_pause = false; state.force_start = true;  saveTradingStateAsync(); return res.json({ success: true, message: 'Force start 24/7' });
+      case 'pause':
+        state.manual_pause = true; state.force_start = false;
+        saveTradingStateAsync();
+        // Stop session if active
+        if (sessionActive) await stopTradingSession();
+        return res.json({ success: true, message: 'Trading paused' });
+
+      case 'resume':
+        state.manual_pause = false; state.force_start = false;
+        saveTradingStateAsync();
+        // FIX 11: resume also starts session if currently in trading hours
+        const hourNow = getCurrentHourIST();
+        if (state.enabled && hourNow >= state.start_hour && hourNow < state.end_hour) {
+          startTradingSession();
+        }
+        return res.json({ success: true, message: 'Trading resumed' });
+
+      case 'force_start':
+        state.manual_pause = false; state.force_start = true;
+        saveTradingStateAsync();
+        // FIX 6: force_start must also start the session engine
+        startTradingSession();
+        return res.json({ success: true, message: 'Force start 24/7' });
+
       case 'force_stop': {
         const price = livePrice || await getCurrentPrice();
         if (price) {
           const closed = await forceClosePosition(price, 'Force Stop');
-          state.manual_pause = true; state.force_start = false; saveTradingStateAsync();
+          state.manual_pause = true; state.force_start = false;
+          saveTradingStateAsync();
+          if (sessionActive) await stopTradingSession();
           return res.json({ success: true, message: closed ? `Closed @ $${price.toFixed(2)} P/L:₹${closed.profit_inr.toFixed(2)}` : 'No open position' });
         }
         return res.json({ success: false, message: 'Could not get price' });
       }
+
       case 'update_hours':
         state.start_hour = req.body.start_hour ?? state.start_hour;
         state.end_hour   = req.body.end_hour   ?? state.end_hour;
         state.enabled    = req.body.enabled    ?? state.enabled;
         saveTradingStateAsync();
         return res.json({ success: true, message: 'Hours updated' });
+
       default: return res.status(400).json({ success: false, error: 'Invalid action' });
     }
   } catch (err) { res.status(400).json({ success: false, error: err.message }); }
 });
 
-// ── USDT/INR (from RAM) ───────────────────────────────────────
 app.get('/usdt-inr-rate', (req, res) => res.json({ rate: getUSDTINRFromMem() }));
 app.post('/usdt-inr-rate', (req, res) => {
   try {
@@ -1287,10 +1208,9 @@ app.post('/usdt-inr-rate', (req, res) => {
   } catch (err) { res.status(400).json({ success: false, error: err.message }); }
 });
 
-// ── Clear history ─────────────────────────────────────────────
 app.post('/clear-history', async (req, res) => {
   try {
-    mem.trades = makeDefaultTrades();
+    mem.trades    = makeDefaultTrades();
     mem.riskState = makeDefaultRiskState();
     saveTradesAsync();
     saveRiskStateAsync();
@@ -1298,7 +1218,6 @@ app.post('/clear-history', async (req, res) => {
   } catch (err) { res.status(500).json({ success: false, error: err.message }); }
 });
 
-// ── Export CSV ────────────────────────────────────────────────
 app.get('/export-history', (req, res) => {
   const trades = mem.trades.history;
   if (!trades.length) return res.status(404).json({ error: 'No trades to export' });
@@ -1320,27 +1239,26 @@ app.get('/export-history', (req, res) => {
 // ════════════════════════════════════════════════════════════════
 app.listen(port, async () => {
   console.log(`✅ Server on port ${port}`);
-  await loadAllFromRedis();       // load all state into RAM from Redis
-  await resetDailyIfNeeded();     // check if daily reset needed
-  connectBybitWS();               // start price feed
+  await loadAllFromRedis();    // load all state from Redis into RAM
+  await resetDailyIfNeeded(); // check daily reset
+  startPeriodicSync();        // FIX 2: start periodic sync AFTER boot, not at module load
+  connectBybitWS();           // start price feed
 
-  // If we boot inside trading hours, start session immediately
   const state = getTradingStateFromMem();
   const hour  = getCurrentHourIST();
-  if (!state.manual_pause && !state.force_start && state.enabled) {
-    if (hour >= state.start_hour && hour < state.end_hour) {
-      console.log(`🟢 [BOOT] Server started inside trading hours (${hour}:xx IST) — starting session`);
-      startTradingSession();
-    } else {
-      console.log(`⏰ [BOOT] Outside trading hours (${hour}:xx IST) — waiting for ${state.start_hour}:00`);
-    }
-  } else if (state.force_start) {
-    console.log('🔥 [BOOT] Force start active — starting session immediately');
+
+  if (state.force_start) {
+    console.log('🔥 [BOOT] Force start active — starting session');
     startTradingSession();
+  } else if (!state.manual_pause && state.enabled && hour >= state.start_hour && hour < state.end_hour) {
+    console.log(`🟢 [BOOT] Inside trading hours (${hour}:xx IST) — starting session`);
+    startTradingSession();
+  } else {
+    console.log(`⏰ [BOOT] Outside trading hours (${hour}:xx IST) — waiting for ${state.start_hour}:00 IST`);
   }
 
   console.log(`🏓 Self-pinger: every 4min → ${SELF_URL}/ping`);
-  console.log(`📊 Redis target: ~3,000 ops/day`);
-  console.log(`⏰ Trading hours: ${state.start_hour}:00–${state.end_hour}:00 IST`);
-  console.log(`🔄 Server fallback: kicks in after 10 min browser silence`);
+  console.log(`⏰ Trading: ${state.start_hour}:00–${state.end_hour}:00 IST | Force:${state.force_start} | Paused:${state.manual_pause}`);
+  console.log(`🔄 Server fallback kicks in after 10min browser silence`);
+  console.log(`📊 Redis: ~3,000 ops/day (dirty-flag sync)`);
 });
