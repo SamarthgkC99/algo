@@ -176,7 +176,8 @@
     <div class="health-item"><span class="h-dot h-yellow" id="ws-dot"></span><span class="health-label">WebSocket</span><span class="health-val" id="hb-ws">connecting...</span></div>
     <div class="health-item"><span class="h-dot h-yellow" id="ping-dot"></span><span class="health-label">Self-Ping</span><span class="health-val" id="hb-ping">—</span></div>
     <div class="health-item"><span class="health-label">Live Price</span><span class="health-val" id="hb-price">—</span></div>
-    <div class="health-item"><span class="health-label">Last Signal</span><span class="health-val" id="hb-signal-time">—</span></div>
+    <div class="health-item"><span class="h-dot h-yellow" id="session-dot"></span><span class="health-label">Session</span><span class="health-val" id="hb-session">—</span></div>
+    <div class="health-item"><span class="h-dot h-yellow" id="engine-dot"></span><span class="health-label">Signal Engine</span><span class="health-val" id="hb-engine">—</span></div>
     <div class="health-item"><span class="health-label">Redis ops/day</span><span class="health-val" style="color:var(--accent-green);">~3,000 ✅</span></div>
   </div>
 
@@ -947,6 +948,16 @@ async function fetchHealth() {
     if(d.connected){wsDot.className='h-dot h-green';hbWs.textContent=`✅ ${d.source||'live'}`;hbWs.style.color='var(--accent-green)';}
     else{wsDot.className='h-dot h-red';hbWs.textContent='❌ disconnected';hbWs.style.color='var(--accent-red)';}
     if(d.live_price) document.getElementById('hb-price').textContent='$'+Number(d.live_price).toFixed(2);
+
+    // Session status
+    const sessionDot=document.getElementById('session-dot'), hbSession=document.getElementById('hb-session');
+    if(d.session_active){sessionDot.className='h-dot h-green';hbSession.textContent='🟢 ACTIVE (18–23 IST)';hbSession.style.color='var(--accent-green)';}
+    else{sessionDot.className='h-dot h-red';hbSession.textContent='⏸ OFF (outside hours)';hbSession.style.color='var(--text-secondary)';}
+
+    // Engine source
+    const engDot=document.getElementById('engine-dot'), hbEng=document.getElementById('hb-engine');
+    if(d.engine_source==='browser'){engDot.className='h-dot h-green';hbEng.textContent='🌐 Browser (primary)';hbEng.style.color='var(--accent-green)';}
+    else{engDot.className='h-dot h-yellow';hbEng.textContent='🖥 Server fallback';hbEng.style.color='var(--accent-yellow)';}
   } catch(_){}
   try {
     const pingStart=Date.now(); const pr=await fetch('/ping'); const pingMs=Date.now()-pingStart;
