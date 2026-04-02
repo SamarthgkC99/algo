@@ -805,6 +805,10 @@ function getCurrentHourIST() {
   return parseInt(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata', hour: 'numeric', hour12: false }));
 }
 
+function getCurrentMinuteIST() {
+  return parseInt(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata', minute: 'numeric', hour12: false }));
+}
+
 function isTradingAllowed() {
   const state = getTradingStateFromMem();
   if (state.force_start)  return { allowed: true,  reason: null };
@@ -829,6 +833,269 @@ async function resetDailyIfNeeded() {
 }
 cron.schedule('0 * * * *', resetDailyIfNeeded);
 
+// ════════════════════════════════════════════════════════════════
+// SERVER-SIDE SIGNAL ENGINE
+// Primary: browser POSTs signal via /compute-signal when open.
+// Fallback: server fetches klines itself when browser is absent
+//           (lastBrowserSignal not received for > 10 min).
+// Kline source chain: Bybit → CryptoCompare → CoinGecko OHLC
+// Runs every 5 min, only during trading hours (18:00–23:00 IST).
+// ════════════════════════════════════════════════════════════════
+let lastBrowserSignalAt = 0;           // timestamp of last /compute-signal POST from browser
+const BROWSER_TIMEOUT_MS = 10 * 60 * 1000; // 10 min — if exceeded, server takes over
+let serverEngineRunning  = false;       // lock to prevent overlapping runs
+
+// ── Multi-source kline fetcher ────────────────────────────────
+async function fetchKlinesServer(limit = 350) {
+  // Source 1: Bybit REST klines (not geo-blocked on Render for klines)
+  try {
+    const res  = await fetchWithTimeout(
+      `https://api.bybit.com/v5/market/kline?category=spot&symbol=BTCUSDT&interval=5&limit=${limit}`,
+      {}, 8000
+    );
+    const data = await res.json();
+    if (data?.result?.list?.length > 0) {
+      console.log('[ENGINE] Klines from Bybit');
+      // Bybit returns newest-first → reverse to oldest-first
+      return data.result.list.reverse().map(c => [
+        parseInt(c[0]), c[1], c[2], c[3], c[4], c[5],
+        parseInt(c[0]) + 299999, c[6], 0, '0', '0', '0',
+      ]);
+    }
+  } catch (e) { console.warn('[ENGINE] Bybit klines failed:', e.message); }
+
+  // Source 2: CryptoCompare (5-min aggregate)
+  try {
+    const res  = await fetchWithTimeout(
+      `https://min-api.cryptocompare.com/data/v2/histominute?fsym=BTC&tsym=USD&limit=${limit}&aggregate=5`,
+      {}, 8000
+    );
+    const data = await res.json();
+    if (data?.Data?.Data?.length > 0) {
+      console.log('[ENGINE] Klines from CryptoCompare');
+      return data.Data.Data.map(c => [
+        c.time * 1000, String(c.open), String(c.high), String(c.low), String(c.close),
+        String(c.volumefrom), c.time * 1000 + 299999, String(c.volumeto), 0, '0', '0', '0',
+      ]);
+    }
+  } catch (e) { console.warn('[ENGINE] CryptoCompare klines failed:', e.message); }
+
+  // Source 3: CoinGecko OHLC (hourly only — last resort, less accurate for 5m)
+  try {
+    const res  = await fetchWithTimeout(
+      'https://api.coingecko.com/api/v3/coins/bitcoin/ohlc?vs_currency=usd&days=1',
+      {}, 8000
+    );
+    const data = await res.json();
+    if (data?.length > 0) {
+      console.log('[ENGINE] Klines from CoinGecko OHLC (hourly — reduced accuracy)');
+      return data.map(c => [
+        c[0], String(c[1]), String(c[2]), String(c[3]), String(c[4]),
+        '0', c[0] + 3599999, '0', 0, '0', '0', '0',
+      ]);
+    }
+  } catch (e) { console.warn('[ENGINE] CoinGecko OHLC failed:', e.message); }
+
+  console.error('[ENGINE] All kline sources failed');
+  return null;
+}
+
+// ── Core server signal tick ───────────────────────────────────
+async function serverSignalTick() {
+  if (serverEngineRunning) return;
+  serverEngineRunning = true;
+  try {
+    const { allowed } = isTradingAllowed();
+    if (!allowed) { console.log('[ENGINE] Outside trading hours — skipping'); return; }
+
+    // If browser recently posted a signal, don't duplicate
+    const browserActive = (Date.now() - lastBrowserSignalAt) < BROWSER_TIMEOUT_MS;
+    if (browserActive) {
+      console.log('[ENGINE] Browser active — server fallback not needed');
+      return;
+    }
+
+    console.log('[ENGINE] Browser absent — running server-side signal computation');
+    const klines = await fetchKlinesServer(350);
+    if (!klines || klines.length < 50) {
+      console.error('[ENGINE] Not enough klines — aborting tick');
+      return;
+    }
+
+    // Exclude last forming candle
+    const confirmed = klines.slice(0, -1);
+    const last      = confirmed[confirmed.length - 1];
+
+    const df1 = calcUtbot(confirmed, 2, 1);
+    const df2 = calcUtbot(confirmed, 2, 300);
+
+    const sig1  = df1.pos[df1.pos.length - 1];
+    const sig2  = df2.pos[df2.pos.length - 1];
+    const stop1 = df1.stop[df1.stop.length - 1];
+    const stop2 = df2.stop[df2.stop.length - 1];
+    const atr   = df1.atr[df1.atr.length - 1] || 0;
+    const price = parseFloat(last[4]);
+
+    let signal = 'Hold', utbotStop = null;
+    if (sig2 === 1)  { signal = 'Buy';  utbotStop = stop2; }
+    if (sig1 === -1) { signal = 'Sell'; utbotStop = stop1; }
+
+    const candle = {
+      ts:    parseInt(last[0]),
+      open:  parseFloat(last[1]),
+      high:  parseFloat(last[2]),
+      low:   parseFloat(last[3]),
+      close: price,
+    };
+
+    console.log(`[ENGINE] Server signal: ${signal} @ $${price.toFixed(2)} ATR:${atr.toFixed(2)}`);
+
+    // Run through the same trade logic as /compute-signal
+    await processSignal(signal, price, atr, utbotStop || price, candle);
+
+  } catch (e) {
+    console.error('[ENGINE] Server tick error:', e.message);
+  } finally {
+    serverEngineRunning = false;
+  }
+}
+
+// Shared signal processing — used by both /compute-signal and serverSignalTick
+async function processSignal(signal, price, atr, utbotStop, candle) {
+  const { allowed, reason } = isTradingAllowed();
+  if (!allowed) return { ok: true, action: 'PAUSED', reason };
+
+  const openTrade = mem.trades.open_trade;
+
+  // OHLC SL/TP check (primary)
+  if (openTrade && candle) {
+    if (openTrade.type === 'LONG') {
+      if (candle.low <= openTrade.stop_loss) {
+        const { tradeRecord } = await closeFullPositionInMem(openTrade, openTrade.stop_loss, 'SL Hit (OHLC)');
+        addOrderLog('SL_HIT_OHLC', 'Sell', openTrade.stop_loss, openTrade.amount, tradeRecord.profit_inr);
+        mem.trades.last_closed_time = Date.now(); mem.trades.last_close_reason = 'sl';
+        saveTradesAsync(); saveRiskStateAsync();
+        return { ok: true, action: 'SL_HIT', trade: tradeRecord };
+      }
+      const nextTP = openTrade.tp_levels?.find(t => !t.hit);
+      if (nextTP && candle.high >= nextTP.price) {
+        if (nextTP.name === 'TP1') {
+          const { tradeRecord } = await closePartialPositionInMem(openTrade, nextTP.price, 0.6, 'TP1 Hit (OHLC)');
+          addOrderLog('TP1_OHLC', 'Sell', nextTP.price, 0, tradeRecord.profit_inr);
+          mem.trades.last_close_reason = 'tp';
+          saveTradesAsync(); saveRiskStateAsync();
+          return { ok: true, action: 'TP1_HIT', trade: tradeRecord };
+        } else {
+          const { tradeRecord } = await closeFullPositionInMem(openTrade, nextTP.price, `${nextTP.name} Hit (OHLC)`);
+          addOrderLog(`${nextTP.name}_OHLC`, 'Sell', nextTP.price, openTrade.amount, tradeRecord.profit_inr);
+          mem.trades.last_closed_time = Date.now(); mem.trades.last_close_reason = 'tp';
+          saveTradesAsync(); saveRiskStateAsync();
+          return { ok: true, action: 'TP_HIT', trade: tradeRecord };
+        }
+      }
+    } else { // SHORT
+      if (candle.high >= openTrade.stop_loss) {
+        const { tradeRecord } = await closeFullPositionInMem(openTrade, openTrade.stop_loss, 'SL Hit (OHLC)');
+        addOrderLog('SL_HIT_OHLC', 'Buy', openTrade.stop_loss, openTrade.amount, tradeRecord.profit_inr);
+        mem.trades.last_closed_time = Date.now(); mem.trades.last_close_reason = 'sl';
+        saveTradesAsync(); saveRiskStateAsync();
+        return { ok: true, action: 'SL_HIT', trade: tradeRecord };
+      }
+      const nextTP = openTrade.tp_levels?.find(t => !t.hit);
+      if (nextTP && candle.low <= nextTP.price) {
+        const { tradeRecord } = await closeFullPositionInMem(openTrade, nextTP.price, `${nextTP.name} Hit (OHLC)`);
+        addOrderLog(`${nextTP.name}_OHLC`, 'Buy', nextTP.price, openTrade.amount, tradeRecord.profit_inr);
+        mem.trades.last_closed_time = Date.now(); mem.trades.last_close_reason = 'tp';
+        saveTradesAsync(); saveRiskStateAsync();
+        return { ok: true, action: 'TP_HIT', trade: tradeRecord };
+      }
+    }
+    // In trade — no new entries
+    if (mem.trades.open_trade) return { ok: true, action: 'IN_TRADE' };
+  }
+
+  const result = await updateDemoTrade(signal, price, atr || 0, utbotStop || price);
+  return { ok: true, action: result.action, ...result };
+}
+
+// ── Trading session scheduler ─────────────────────────────────
+// Cron runs every minute. At session start (18:00) → immediate signal.
+// At session end (23:00) → force close any open trade then stop.
+// During session → server signal engine fires every 5 min.
+
+let sessionActive     = false; // tracks whether we're inside trading hours
+let signalCronHandle  = null;  // handle for the 5-min signal cron
+
+function startTradingSession() {
+  if (sessionActive) return;
+  sessionActive = true;
+  console.log('🟢 [SESSION] Trading session started (18:00 IST) — running immediate signal check');
+
+  // Immediate signal check at session open
+  serverSignalTick();
+
+  // Schedule signal every 5 minutes during session
+  // */5 * * * * = every 5 minutes
+  signalCronHandle = cron.schedule('*/5 * * * *', () => {
+    serverSignalTick();
+  });
+}
+
+async function stopTradingSession() {
+  if (!sessionActive) return;
+  sessionActive = false;
+  console.log('🔴 [SESSION] Trading session ended (23:00 IST) — force closing any open trade');
+
+  // Stop 5-min signal cron
+  if (signalCronHandle) {
+    signalCronHandle.stop();
+    signalCronHandle = null;
+  }
+
+  // Force close open trade at market price
+  const openTrade = mem.trades.open_trade;
+  if (openTrade) {
+    const price = livePrice || await getCurrentPrice();
+    if (price) {
+      const closed = await forceClosePosition(price, 'Session End (23:00 IST)');
+      console.log(`🔴 [SESSION] Force closed ${openTrade.type} @ $${price.toFixed(2)} | P/L:₹${closed?.profit_inr?.toFixed(2)}`);
+    } else {
+      console.error('[SESSION] Could not get price to force close — trade left open');
+    }
+  } else {
+    console.log('[SESSION] No open trade to close');
+  }
+}
+
+// Session watchdog — runs every minute, triggers start/stop at exact hours
+cron.schedule('* * * * *', async () => {
+  const state = getTradingStateFromMem();
+
+  // Force start overrides session scheduler
+  if (state.force_start || state.manual_pause) return;
+  if (!state.enabled) return;
+
+  const hour = getCurrentHourIST();
+  const min  = getCurrentMinuteIST();
+
+  // 18:00 → start session
+  if (hour === state.start_hour && min === 0 && !sessionActive) {
+    startTradingSession();
+  }
+
+  // 23:00 → stop session
+  if (hour === state.end_hour && min === 0 && sessionActive) {
+    await stopTradingSession();
+  }
+
+  // If we're mid-session (e.g. server restarted during trading hours)
+  // and the signal cron isn't running, restart it
+  if (hour >= state.start_hour && hour < state.end_hour && !sessionActive && !state.manual_pause) {
+    console.log('[SESSION] Server restarted mid-session — resuming signal engine');
+    startTradingSession();
+  }
+});
+
 function getRiskStatus() {
   const config = getRiskConfigFromMem();
   const state  = getRiskStateFromMem();
@@ -851,11 +1118,19 @@ function getRiskStatus() {
 // EXPRESS ROUTES
 // ════════════════════════════════════════════════════════════════
 app.get('/ping', (req, res) => {
-  res.send(`pong | ws:${wsConnected ? wsSource : 'down'} | $${livePrice?.toFixed(2) || 'N/A'} | ${new Date().toISOString()}`);
+  const browserActive = (Date.now() - lastBrowserSignalAt) < BROWSER_TIMEOUT_MS;
+  res.send(`pong | ws:${wsConnected ? wsSource : 'down'} | $${livePrice?.toFixed(2) || 'N/A'} | session:${sessionActive ? 'ACTIVE' : 'OFF'} | engine:${browserActive ? 'browser' : 'server'} | ${new Date().toISOString()}`);
 });
 
 app.get('/ws-status', (req, res) => {
-  res.json({ connected: wsConnected, source: wsSource || null, live_price: livePrice, fail_count: wsFailCount, last_check: new Date(lastWsSync).toISOString() });
+  const browserActive = (Date.now() - lastBrowserSignalAt) < BROWSER_TIMEOUT_MS;
+  res.json({
+    connected: wsConnected, source: wsSource || null, live_price: livePrice,
+    fail_count: wsFailCount, last_check: new Date(lastWsSync).toISOString(),
+    session_active: sessionActive,
+    engine_source: browserActive ? 'browser' : 'server',
+    last_browser_signal: lastBrowserSignalAt ? new Date(lastBrowserSignalAt).toISOString() : null,
+  });
 });
 
 app.get('/', (req, res) => res.sendFile(__dirname + '/index.html'));
@@ -901,69 +1176,21 @@ app.get('/signal', async (req, res) => {
 
 // ── /compute-signal — receives browser-computed signal ─────────
 // Browser fetches klines, runs UT Bot logic, sends result here.
-// This is the main trade decision endpoint (called every 5 min candle).
+// Also updates lastBrowserSignalAt so server fallback knows
+// browser is active and doesn't duplicate signal computation.
 // Body: { signal, price, atr, utbot_stop, candle }
 app.post('/compute-signal', async (req, res) => {
   try {
     const { signal, price, atr, utbot_stop, candle } = req.body;
     if (!signal || !price) return res.json({ ok: false, msg: 'Missing signal or price' });
 
-    const { allowed, reason } = isTradingAllowed();
-    if (!allowed) return res.json({ ok: true, action: 'PAUSED', reason });
+    // Mark browser as active — suppresses server fallback for 10 min
+    lastBrowserSignalAt = Date.now();
 
-    console.log(`[SIGNAL-IN] ${signal} @ $${price} ATR:${atr?.toFixed(2)}`);
+    console.log(`[SIGNAL-IN] Browser: ${signal} @ $${price} ATR:${atr?.toFixed(2)}`);
 
-    // OHLC candle-level SL/TP check (primary — covers full candle range)
-    const openTrade = mem.trades.open_trade;
-    if (openTrade && candle) {
-      if (openTrade.type === 'LONG') {
-        if (candle.low <= openTrade.stop_loss) {
-          const { tradeRecord } = await closeFullPositionInMem(openTrade, openTrade.stop_loss, 'SL Hit (OHLC)');
-          addOrderLog('SL_HIT_OHLC', 'Sell', openTrade.stop_loss, openTrade.amount, tradeRecord.profit_inr);
-          mem.trades.last_closed_time = Date.now(); mem.trades.last_close_reason = 'sl';
-          saveTradesAsync(); saveRiskStateAsync();
-          return res.json({ ok: true, action: 'SL_HIT', trade: tradeRecord });
-        }
-        const nextTP = openTrade.tp_levels?.find(t => !t.hit);
-        if (nextTP && candle.high >= nextTP.price) {
-          if (nextTP.name === 'TP1') {
-            const { tradeRecord } = await closePartialPositionInMem(openTrade, nextTP.price, 0.6, 'TP1 Hit (OHLC)');
-            addOrderLog('TP1_OHLC', 'Sell', nextTP.price, 0, tradeRecord.profit_inr);
-            mem.trades.last_close_reason = 'tp';
-            saveTradesAsync(); saveRiskStateAsync();
-            return res.json({ ok: true, action: 'TP1_HIT', trade: tradeRecord });
-          } else {
-            const { tradeRecord } = await closeFullPositionInMem(openTrade, nextTP.price, `${nextTP.name} Hit (OHLC)`);
-            addOrderLog(`${nextTP.name}_OHLC`, 'Sell', nextTP.price, openTrade.amount, tradeRecord.profit_inr);
-            mem.trades.last_closed_time = Date.now(); mem.trades.last_close_reason = 'tp';
-            saveTradesAsync(); saveRiskStateAsync();
-            return res.json({ ok: true, action: 'TP_HIT', trade: tradeRecord });
-          }
-        }
-      } else { // SHORT
-        if (candle.high >= openTrade.stop_loss) {
-          const { tradeRecord } = await closeFullPositionInMem(openTrade, openTrade.stop_loss, 'SL Hit (OHLC)');
-          addOrderLog('SL_HIT_OHLC', 'Buy', openTrade.stop_loss, openTrade.amount, tradeRecord.profit_inr);
-          mem.trades.last_closed_time = Date.now(); mem.trades.last_close_reason = 'sl';
-          saveTradesAsync(); saveRiskStateAsync();
-          return res.json({ ok: true, action: 'SL_HIT', trade: tradeRecord });
-        }
-        const nextTP = openTrade.tp_levels?.find(t => !t.hit);
-        if (nextTP && candle.low <= nextTP.price) {
-          const { tradeRecord } = await closeFullPositionInMem(openTrade, nextTP.price, `${nextTP.name} Hit (OHLC)`);
-          addOrderLog(`${nextTP.name}_OHLC`, 'Buy', nextTP.price, openTrade.amount, tradeRecord.profit_inr);
-          mem.trades.last_closed_time = Date.now(); mem.trades.last_close_reason = 'tp';
-          saveTradesAsync(); saveRiskStateAsync();
-          return res.json({ ok: true, action: 'TP_HIT', trade: tradeRecord });
-        }
-      }
-
-      // In trade — ignore new signal (Rule 7 equivalent)
-      if (openTrade) return res.json({ ok: true, action: 'IN_TRADE' });
-    }
-
-    const result = await updateDemoTrade(signal, price, atr || 0, utbot_stop || price);
-    return res.json({ ok: true, action: result.action, ...result });
+    const result = await processSignal(signal, price, atr || 0, utbot_stop || price, candle);
+    return res.json(result);
 
   } catch (e) {
     console.error('/compute-signal error:', e);
@@ -1093,9 +1320,27 @@ app.get('/export-history', (req, res) => {
 // ════════════════════════════════════════════════════════════════
 app.listen(port, async () => {
   console.log(`✅ Server on port ${port}`);
-  await loadAllFromRedis();       // load all state into RAM from Redis (1 boot read)
+  await loadAllFromRedis();       // load all state into RAM from Redis
   await resetDailyIfNeeded();     // check if daily reset needed
   connectBybitWS();               // start price feed
+
+  // If we boot inside trading hours, start session immediately
+  const state = getTradingStateFromMem();
+  const hour  = getCurrentHourIST();
+  if (!state.manual_pause && !state.force_start && state.enabled) {
+    if (hour >= state.start_hour && hour < state.end_hour) {
+      console.log(`🟢 [BOOT] Server started inside trading hours (${hour}:xx IST) — starting session`);
+      startTradingSession();
+    } else {
+      console.log(`⏰ [BOOT] Outside trading hours (${hour}:xx IST) — waiting for ${state.start_hour}:00`);
+    }
+  } else if (state.force_start) {
+    console.log('🔥 [BOOT] Force start active — starting session immediately');
+    startTradingSession();
+  }
+
   console.log(`🏓 Self-pinger: every 4min → ${SELF_URL}/ping`);
-  console.log(`📊 Redis target: ~3,000 ops/day (was 820,000+)`);
+  console.log(`📊 Redis target: ~3,000 ops/day`);
+  console.log(`⏰ Trading hours: ${state.start_hour}:00–${state.end_hour}:00 IST`);
+  console.log(`🔄 Server fallback: kicks in after 10 min browser silence`);
 });
