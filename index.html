@@ -785,7 +785,7 @@ async function fetchAndUpdate() {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const d = await res.json();
     lastData = d;
-    document.getElementById('hb-signal-time').textContent = new Date().toLocaleTimeString('en-IN',{timeZone:'Asia/Kolkata'});
+    
     if (d.atr) { lastATR=d.atr; if(currentRR!=='none') updateRRPreview(); }
     document.getElementById('price').textContent = '$' + (d.price||0).toFixed(2);
     document.getElementById('hb-price').textContent = '$' + (d.price||0).toFixed(2);
