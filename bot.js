@@ -108,7 +108,8 @@ function makeDefaultRiskState() {
 }
 
 function makeDefaultTradingState() {
-  return { enabled: true, start_hour: 18, end_hour: 23, manual_pause: false, force_start: false };
+  // enabled: false = 24/7 (no hour restriction) | enabled: true = restrict to start_hour–end_hour IST
+  return { enabled: false, start_hour: 18, end_hour: 23, manual_pause: false, force_start: false };
 }
 
 function makeDefaultRiskConfig() {
@@ -1011,11 +1012,28 @@ async function stopTradingSession() {
 // Session watchdog — every minute
 cron.schedule('* * * * *', async () => {
   const state = getTradingStateFromMem();
-  if (state.force_start || state.manual_pause || !state.enabled) return;
+  if (state.manual_pause) return; // paused — do nothing
 
   const hour = getCurrentHourIST();
   const min  = getCurrentMinuteIST();
 
+  if (!state.enabled || state.force_start) {
+    // 24/7 mode: session should always be active
+    // Only handle the 23:00 safety force-close (user requested this)
+    if (hour === state.end_hour && min === 0 && mem.trades.open_trade) {
+      console.log('[SESSION] 24/7 mode — 23:00 IST safety force-close triggered');
+      const price = livePrice || await getCurrentPrice();
+      if (price) await forceClosePosition(price, 'Daily Safety Close (23:00 IST)');
+    }
+    // Ensure session is always running in 24/7 mode
+    if (!sessionActive) {
+      console.log('[SESSION] 24/7 mode — restarting session engine');
+      startTradingSession();
+    }
+    return;
+  }
+
+  // Hours-restricted mode
   if (hour === state.start_hour && min === 0 && !sessionActive) startTradingSession();
   if (hour === state.end_hour   && min === 0 && sessionActive)  await stopTradingSession();
 
@@ -1247,18 +1265,25 @@ app.listen(port, async () => {
   const state = getTradingStateFromMem();
   const hour  = getCurrentHourIST();
 
-  if (state.force_start) {
-    console.log('🔥 [BOOT] Force start active — starting session');
+  // 24/7 default: start session unless manually paused
+  // If hours restriction is enabled, session watchdog handles start/stop at correct times
+  if (state.manual_pause) {
+    console.log('⏸ [BOOT] Manually paused — not starting session');
+  } else if (!state.enabled || state.force_start) {
+    // 24/7 mode (enabled:false) or force_start — start immediately
+    console.log('🟢 [BOOT] 24/7 mode — starting session immediately');
     startTradingSession();
-  } else if (!state.manual_pause && state.enabled && hour >= state.start_hour && hour < state.end_hour) {
+  } else if (hour >= state.start_hour && hour < state.end_hour) {
+    // Hours-restricted mode, and we're inside hours
     console.log(`🟢 [BOOT] Inside trading hours (${hour}:xx IST) — starting session`);
     startTradingSession();
   } else {
     console.log(`⏰ [BOOT] Outside trading hours (${hour}:xx IST) — waiting for ${state.start_hour}:00 IST`);
   }
 
+  const modeStr = !state.enabled ? '24/7 (always on)' : `${state.start_hour}:00–${state.end_hour}:00 IST`;
   console.log(`🏓 Self-pinger: every 4min → ${SELF_URL}/ping`);
-  console.log(`⏰ Trading: ${state.start_hour}:00–${state.end_hour}:00 IST | Force:${state.force_start} | Paused:${state.manual_pause}`);
+  console.log(`⏰ Trading mode: ${modeStr} | Paused:${state.manual_pause} | Force:${state.force_start}`);
   console.log(`🔄 Server fallback kicks in after 10min browser silence`);
   console.log(`📊 Redis: ~3,000 ops/day (dirty-flag sync)`);
 });
